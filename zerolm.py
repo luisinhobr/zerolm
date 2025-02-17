@@ -120,45 +120,25 @@ class VectorManager:
         return self.vectors[key]
 
 class AdaptiveMemoryManager:
-    """Memory management with adaptive thresholds"""
+    """Enhanced with proper iteration support"""
     def __init__(self):
-        self.hot_storage = defaultdict(list)
-        self.warm_storage = defaultdict(list)
-        self.cold_storage = defaultdict(list)
-        self.access_counts = defaultdict(int)
-        self.usage_history = deque(maxlen=1000)
-        self._pattern_count = 0  # Contador explícito
+        self.hot_storage = {}    # Frequently accessed patterns
+        self.warm_storage = {}   # Moderately used patterns
+        self.cold_storage = {}   # Rarely used patterns
         
-    def _calculate_thresholds(self) -> Tuple[float, float]:
-        """Dynamic threshold calculation using z-scores"""
-        if len(self.usage_history) < 100:
-            return 10, 100  # Default thresholds
+    def __len__(self) -> int:
+        """Total patterns across all storage tiers"""
+        return (
+            len(self.hot_storage) + 
+            len(self.warm_storage) + 
+            len(self.cold_storage)
+        )
         
-        counts = np.array(self.usage_history)
-        mean = np.mean(counts)
-        std = np.std(counts)
-        
-        warm_thresh = mean + std
-        hot_thresh = mean + 2*std
-        return warm_thresh, hot_thresh
-
-    def add_pattern(self, pattern: frozenset, response: str, ts: float):
-        count = self.access_counts[pattern]
-        self.usage_history.append(count)
-        
-        warm_thresh, hot_thresh = self._calculate_thresholds()
-        
-        if count > hot_thresh:
-            self.hot_storage[pattern].append((response, ts))
-        elif count > warm_thresh:
-            self.warm_storage[pattern].append((response, ts))
-        else:
-            self.cold_storage[pattern].append((response, ts))
-        self._pattern_count += 1
-
-    def get_pattern_count(self) -> int:
-        """Retorna o número total de padrões armazenados"""
-        return self._pattern_count
+    def items(self):
+        """Combine items from all storage tiers"""
+        return list(self.hot_storage.items()) + \
+               list(self.warm_storage.items()) + \
+               list(self.cold_storage.items())
 
 class PatternMatcher:
     """Advanced pattern matching with multiple similarity metrics"""
@@ -1023,46 +1003,45 @@ class ZeroShotLM:
         """Calculate cosine similarity between two vectors"""
         return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9)
 
-    def get_memory_stats(self) -> MemoryStats:
-        """Detailed memory statistics"""
-        # Calculate memory usage components
-        vector_memory = len(self.vector_mgr.vectors) * self.vector_dim * 4  # 4 bytes per float32
-        pattern_count = self.memory.get_pattern_count()
+    def get_memory_stats(self) -> str:
+        """Get formatted memory statistics"""
+        stats = {
+            'total_patterns': len(self.memory),
+            'storage_distribution': {
+                'hot': len(self.memory.hot_storage),
+                'warm': len(self.memory.warm_storage),
+                'cold': len(self.memory.cold_storage)
+            },
+            'confidence_histogram': self._calculate_confidence_distribution(),
+            'recent_usage': self._get_recent_usage_stats()
+        }
         
-        # Calculate token statistics
-        all_tokens = set()
-        for pattern in self.memory:
-            all_tokens.update(pattern)
-        token_count = len(all_tokens)
-        
-        # Build confidence histogram
-        conf_bins = defaultdict(int)
-        for responses in self.memory.values():
-            for response, _ in responses:
-                if response.confidence >= 0.9:
-                    conf_bins["0.9-1.0"] += 1
-                elif response.confidence >= 0.7:
-                    conf_bins["0.7-0.89"] += 1
-                elif response.confidence >= 0.5:
-                    conf_bins["0.5-0.69"] += 1
-                else:
-                    conf_bins["<0.5"] += 1
-                    
-        # Get recent usage patterns (last 24 hours)
-        recent_usage = []
-        cutoff = time.time() - 86400
-        for pattern, responses in self.memory.items():
-            latest_ts = max(ts for _, ts in responses)
-            if latest_ts > cutoff:
-                recent_usage.append((" ".join(pattern), latest_ts))
-        
-        return MemoryStats(
-            pattern_count=pattern_count,
-            token_count=token_count,
-            vector_memory_mb=vector_memory / 1e6,
-            confidence_histogram=dict(conf_bins),
-            recent_usage=sorted(recent_usage, key=lambda x: -x[1])[:5]  # Top 5 recent
-        )
+        return self._format_stats(stats)
+
+    def _calculate_confidence_distribution(self) -> dict:
+        """Calculate confidence distribution across all patterns"""
+        confidences = []
+        for _, patterns in self.memory.items():
+            confidences.extend([p[1] for p in patterns])
+            
+        return {
+            '0.9+': len([c for c in confidences if c >= 0.9]),
+            '0.7-0.9': len([c for c in confidences if 0.7 <= c < 0.9]),
+            '0.5-0.7': len([c for c in confidences if 0.5 <= c < 0.7]),
+            '<0.5': len([c for c in confidences if c < 0.5])
+        }
+
+    def _get_recent_usage_stats(self) -> list:
+        """Get recent usage statistics from hot storage"""
+        recent = []
+        for pattern, data in self.memory.hot_storage.items():
+            recent.append({
+                'pattern': pattern,
+                'last_accessed': time.strftime('%Y-%m-%d %H:%M:%S', 
+                                time.localtime(data['last_accessed'])),
+                'access_count': data['access_count']
+            })
+        return sorted(recent, key=lambda x: x['last_accessed'], reverse=True)[:10]
 
     def optimize_memory(self, target_size_mb: float):
         """Memory optimization implementation"""
