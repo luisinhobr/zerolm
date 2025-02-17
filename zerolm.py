@@ -281,7 +281,7 @@ class ContextWeighter:
         }
 
 class AutoCorrector:
-    """Implements the template's auto-correction rules"""
+    """Implementação completa do sistema de autocorreção"""
     def __init__(self):
         self.correction_layers = [
             {
@@ -290,7 +290,8 @@ class AutoCorrector:
                 'actions': [
                     self.correct_namespace,
                     self.enforce_component_order,
-                    self.validate_numeric_constraints
+                    self.validate_numeric_constraints,
+                    self.verify_required_elements
                 ]
             },
             {
@@ -303,26 +304,100 @@ class AutoCorrector:
             }
         ]
         
-    def apply_corrections(self, xml_tree, confidence: float) -> Dict:
-        """Apply corrections based on template rules"""
-        corrections = {}
-        for layer in self.correction_layers:
-            if layer['type'] == 'structural':
-                for action in layer['actions']:
-                    result = action(xml_tree)
-                    if result['modified']:
-                        corrections[result['name']] = result
-            elif layer['type'] == 'semantic' and confidence < 0.7:
-                corrections.update(self._apply_semantic_corrections(xml_tree))
-        return corrections
+        # Definir a ordem correta dos componentes
+        self.component_order = [
+            'context_analysis',
+            'validation_hierarchy',
+            'attribute_constraints',
+            'processing_pipeline'
+        ]
 
+    def enforce_component_order(self, xml_tree) -> Dict:
+        """Garante a ordem correta dos componentes conforme o template"""
+        errors = {}
+        current_order = [elem.tag for elem in xml_tree]
+        
+        for i, expected_tag in enumerate(self.component_order):
+            if expected_tag in current_order:
+                position = current_order.index(expected_tag)
+                if position < i:
+                    errors[expected_tag] = {
+                        'action': 'move',
+                        'from': position,
+                        'to': i
+                    }
+        
+        if errors:
+            return {
+                'name': 'component_order',
+                'modified': True,
+                'details': errors
+            }
+        return {
+            'name': 'component_order',
+            'modified': False
+        }
+
+    def validate_numeric_constraints(self, xml_tree) -> Dict:
+        """Valida restrições numéricas do template"""
+        constraints = {
+            './/param[@name]': {
+                'min': 0,
+                'max': 1,
+                'decimal_places': 2
+            }
+        }
+        
+        errors = []
+        for xpath, rules in constraints.items():
+            for element in xml_tree.findall(xpath):
+                try:
+                    value = float(element.get('value', 0))
+                    if not (rules['min'] <= value <= rules['max']):
+                        errors.append(f"Valor {value} fora do intervalo em {element.tag}")
+                    if len(str(value).split('.')[-1]) > rules['decimal_places']:
+                        errors.append(f"Precisão excessiva em {element.tag}")
+                except ValueError:
+                    errors.append(f"Valor não numérico em {element.tag}")
+        
+        return {
+            'name': 'numeric_constraints',
+            'modified': bool(errors),
+            'details': errors
+        }
+
+    def verify_required_elements(self, xml_tree) -> Dict:
+        """Verifica elementos obrigatórios do template"""
+        required_elements = [
+            'context_analysis/weighting_system',
+            'validation_hierarchy/layer',
+            'attribute_constraints/param'
+        ]
+        
+        missing = []
+        for xpath in required_elements:
+            if not xml_tree.find(xpath):
+                missing.append(xpath)
+        
+        return {
+            'name': 'required_elements',
+            'modified': bool(missing),
+            'details': missing
+        }
+
+    # Mantém a implementação existente dos outros métodos
     def correct_namespace(self, xml_tree) -> Dict:
-        """Namespace correction per template rules"""
-        # Implementation matching template's example
+        """Corrige namespace conforme template"""
         if 'xmlns' not in xml_tree.attrib:
             xml_tree.set('xmlns', 'template_v3')
-            return {'name': 'namespace', 'modified': True}
-        return {'name': 'namespace', 'modified': False}
+            return {
+                'name': 'namespace',
+                'modified': True
+            }
+        return {
+            'name': 'namespace',
+            'modified': False
+        }
 
 class TemplateEnforcer:
     """Enforces template compliance rules"""
