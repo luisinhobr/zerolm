@@ -1,5 +1,5 @@
 
-# ZeroShotLM - Training-Free Language Model
+# ZeroLM - Training-Free Language Model
 
 A context-aware, self-learning chatbot that adapts through conversation without traditional training.
 
