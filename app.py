@@ -33,40 +33,32 @@ class ChatbotInterface:
         # Try to load existing model state
         self._load_state()
 
-    def _format_response(self, response: Response) -> str:
-        """Format the model response with confidence information"""
-        confidence_color = self._get_confidence_color(response.confidence)
-        confidence_info = f"<span style='color: {confidence_color}'>[Confidence: {response.confidence:.2f}]</span>"
-        
-        response_type = f"<span style='color: gray'>[{response.type.value}]</span>"
-        
-        return f"{response.text} {confidence_info} {response_type}"
+    def _format_response(self, response: Response) -> dict:
+        """Formata a resposta no formato correto para o Gradio"""
+        return {
+            "role": "assistant",
+            "content": f"{response.text} [Confiança: {response.confidence:.2f}]"
+        }
 
-    def _get_confidence_color(self, confidence: float) -> str:
-        """Return color based on confidence level"""
-        if confidence >= 0.8:
-            return "green"
-        elif confidence >= 0.5:
-            return "orange"
-        return "red"
-
-    def chat(self, message: str, history: List[Tuple[str, str]]) -> Tuple[str, List[Tuple[str, str]]]:
-        """Process a chat message and update history"""
+    def chat(self, message: str, history: list) -> tuple:
+        """Processa a mensagem e atualiza o histórico corretamente"""
         if not message.strip():
             return "", history
             
-        # Get response from model
+        # Obtém resposta do modelo
         response = self.model.process_query(message)
         
-        # Format response with confidence and type information
+        # Formata no novo padrão
         formatted_response = self._format_response(response)
         
-        # Update history
-        history.append((message, formatted_response))
-        if len(history) > self.max_history:
-            history = history[-self.max_history:]
+        # Atualiza histórico com dicionários
+        history.append({"role": "user", "content": message})
+        history.append(formatted_response)
+        
+        # Mantém apenas o histórico máximo
+        if len(history) > self.max_history * 2:  # Multiplica por 2 (user + assistant)
+            history = history[-self.max_history * 2:]
             
-        self.history = history
         return "", history
 
     def learn_response(self, message: str, correct_response: str) -> str:
@@ -111,18 +103,22 @@ class ChatbotInterface:
         return self.model.get_memory_stats()
 
 def create_chatbot_interface():
-    """Cria a interface Gradio atualizada"""
+    """Cria interface com configuração correta de mensagens"""
     chatbot = ChatbotInterface()
     
     with gr.Blocks() as interface:
         gr.Markdown("# Chatbot ZeroShotLM")
         
-        # Componente de chat atualizado
+        # Componente de chat configurado corretamente
         chat_messages = gr.Chatbot(
-            label="Histórico",
+            label="Conversa",
             height=600,
             avatar_images=("assets/user.png", "assets/bot.png"),
-            type="messages"  # Formato OpenAI
+            type="messages",
+            examples=[
+                {"role": "user", "content": "O que é inteligência artificial?"},
+                {"role": "user", "content": "Explique machine learning"}
+            ]
         )
         
         with gr.Row():
