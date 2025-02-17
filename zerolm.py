@@ -420,7 +420,7 @@ class ZeroShotLM:
         self.metrics = PerformanceMetrics()
 
         self.validator = TemplateValidator()
-        self.distiller = KnowledgeDistiller()
+        self.distiller = KnowledgeDistiller(self.vector_mgr, self.memory)
         self.weighter = ContextWeighter()
         self.corrector = AutoCorrector()
         self.enforcer = TemplateEnforcer()
@@ -1092,79 +1092,150 @@ class TemplateValidator:
         return errors
 
 class KnowledgeDistiller:
-    """Temporal-aware knowledge distillation"""
-    def __init__(self):
+    """Distilador de conhecimento integrado com os componentes do ZeroShotLM"""
+    
+    def __init__(self, vector_mgr: VectorManager, memory):
+        self.vector_mgr = vector_mgr
+        self.memory = memory
         self.source_models = {
             'primary': {
                 'name': 'vector_similarity',
-                'capability_rating': 0.85,
-                'handler': self._handle_vector_model
+                'handler': self._handle_vector_model,
+                'weight': 0.6
             },
             'secondary': {
-                'name': 'pattern_matching', 
-                'optimization_profile': 'efficiency',
-                'handler': self._handle_pattern_model
+                'name': 'pattern_matching',
+                'handler': self._handle_pattern_model,
+                'weight': 0.4
             }
         }
-        
-    def distill_response(self, query: str, context: Dict) -> Response:
-        """Main distillation workflow"""
+
+    def distill_response(self, query: str, context: dict) -> Response:
+        """Fluxo principal de destilação integrado com o modelo"""
         vector_resp = self.source_models['primary']['handler'](query)
         pattern_resp = self.source_models['secondary']['handler'](query)
         
         if self._responses_aligned(vector_resp, pattern_resp):
-            return self._merge_responses(vector_resp, pattern_resp)
+            return self._merge_responses(vector_resp, pattern_resp, context)
         return self._select_response(vector_resp, pattern_resp)
 
-    def _responses_aligned(self, resp1: Response, resp2: Response) -> bool:
-        """Check response alignment per template rules"""
-        return abs(resp1.confidence - resp2.confidence) < 0.2 and \
-               resp1.type == resp2.type
-
-    def _merge_responses(self, resp1: Response, resp2: Response) -> Response:
-        """Time-weighted response merging"""
-        time_diff = abs(resp1.metadata['timestamp'] - resp2.metadata['timestamp'])
-        recency_weight = math.exp(-0.1 * time_diff/3600)  # Hourly decay
+    def _handle_vector_model(self, query: str) -> Response:
+        """Processamento vetorial usando a infraestrutura existente"""
+        tokens = self._tokenize(query)
+        query_vec = self.vector_mgr.get_query_vector(tokens)
+        matches = self.vector_mgr.find_similar(query_vec)
         
-        if recency_weight > 0.7:
-            merged_text = f"{resp1.text} ({resp2.text})"
-        else:
-            merged_text = resp1.text if resp1.confidence > resp2.confidence else resp2.text
-            
-        merged_conf = (resp1.confidence * recency_weight + 
-                      resp2.confidence * (1 - recency_weight))
-        
-        return Response(merged_text, resp1.type, merged_conf)
-
-class MemoryManager:
-    """Temporal memory management with decay"""
-    def _apply_temporal_decay(self):
-        """Decay less recently used patterns"""
-        current_time = time.time()
-        for pattern in list(self.memory.keys()):
-            last_used = self.memory[pattern]['last_accessed']
-            days_since = (current_time - last_used) / 86400
-            
-            # Apply exponential decay to confidence
-            self.memory[pattern]['confidence'] *= math.exp(-0.1 * days_since)
-            
-            # Remove decayed patterns
-            if self.memory[pattern]['confidence'] < 0.1:
-                del self.memory[pattern]
-
-class LearningValidator:
-    """Temporal validation of learned patterns"""
-    def validate_learning(self, query: str, response: str) -> bool:
-        # Check temporal consistency with recent patterns
-        recent_patterns = self._get_recent_patterns(hours=24)
-        if not self._check_temporal_consistency(response, recent_patterns):
-            return False
-        return True
-
-    def _check_temporal_consistency(self, response: str, 
-                                   recent_patterns: List) -> bool:
-        # Check if response aligns with recent knowledge
-        return any(
-            self._semantic_similarity(response, r) > 0.7
-            for r in recent_patterns
+        if matches:
+            best_match = matches[0]
+            return Response(
+                text=best_match['response'],
+                type=ResponseType.VECTOR_BASED,
+                confidence=best_match['confidence'],
+                metadata={
+                    'timestamp': time.time(),
+                    'method': 'vector_similarity',
+                    'matched_vector': best_match['vector']
+                }
+            )
+        return Response(
+            text="Não encontrei correspondência vetorial relevante.",
+            type=ResponseType.LEARNING,
+            confidence=0.0
         )
+
+    def _handle_pattern_model(self, query: str) -> Response:
+        """Correspondência de padrões usando a memória existente"""
+        tokens = self._tokenize(query)
+        expanded_tokens = self._expand_tokens(tokens)
+        
+        best_match = None
+        max_confidence = 0.0
+        
+        for pattern in self._get_candidate_patterns(expanded_tokens):
+            match_score = self._calculate_pattern_score(pattern, expanded_tokens)
+            if match_score > max_confidence:
+                responses = self.memory.get(pattern, [])
+                if responses:
+                    best_response = max(responses, key=lambda x: x[1])
+                    max_confidence = match_score
+                    best_match = (best_response[0], best_response[1])
+        
+        if best_match and max_confidence >= self.memory.min_confidence:
+            return Response(
+                text=best_match[0],
+                type=ResponseType.PATTERN_MATCH,
+                confidence=max_confidence,
+                metadata={
+                    'timestamp': time.time(),
+                    'method': 'pattern_matching',
+                    'matched_pattern': list(pattern)
+                }
+            )
+        return Response(
+            text="Padrão não reconhecido.",
+            type=ResponseType.LEARNING,
+            confidence=0.0
+        )
+
+    def _responses_aligned(self, resp1: Response, resp2: Response) -> bool:
+        """Verifica alinhamento considerando contexto e semântica"""
+        return (
+            abs(resp1.confidence - resp2.confidence) < 0.2 and
+            self._semantic_similarity(resp1.text, resp2.text) > 0.7
+        )
+
+    def _merge_responses(self, resp1: Response, resp2: Response, context: dict) -> Response:
+        """Combina respostas usando pesos contextuais"""
+        time_diff = abs(resp1.metadata['timestamp'] - resp2.metadata['timestamp'])
+        recency_weight = math.exp(-0.1 * (time_diff / 3600))  # Decaimento por hora
+        
+        weights = {
+            'vector': self.source_models['primary']['weight'] * recency_weight,
+            'pattern': self.source_models['secondary']['weight'] * (1 - recency_weight)
+        }
+        
+        total_weight = weights['vector'] + weights['pattern']
+        normalized_weights = {
+            'vector': weights['vector'] / total_weight,
+            'pattern': weights['pattern'] / total_weight
+        }
+        
+        merged_text = f"{resp1.text} ({resp2.text})" if recency_weight > 0.7 else resp1.text
+        merged_confidence = (resp1.confidence * normalized_weights['vector'] +
+                            resp2.confidence * normalized_weights['pattern'])
+        
+        return Response(
+            text=merged_text,
+            type=resp1.type if resp1.confidence >= resp2.confidence else resp2.type,
+            confidence=merged_confidence,
+            metadata={
+                'components': [resp1.metadata, resp2.metadata],
+                'merge_weights': normalized_weights
+            }
+        )
+
+    def _select_response(self, resp1: Response, resp2: Response) -> Response:
+        """Seleção baseada em confiança e contexto temporal"""
+        time_diff = resp2.metadata['timestamp'] - resp1.metadata['timestamp']
+        recency_bonus = 0.1 * (1 - math.exp(-time_diff/3600))  # Bônus de 10% para respostas mais recentes
+        
+        adjusted_confidence = {
+            'vector': resp1.confidence + (recency_bonus if time_diff < 0 else 0),
+            'pattern': resp2.confidence + (recency_bonus if time_diff > 0 else 0)
+        }
+        
+        if adjusted_confidence['vector'] >= adjusted_confidence['pattern']:
+            return resp1
+        return resp2
+
+    # Métodos auxiliares integrados com o restante do sistema
+    def _tokenize(self, text: str) -> List[str]:
+        return [word.lower() for word in text.split() if len(word) > 2]
+
+    def _semantic_similarity(self, text1: str, text2: str) -> float:
+        vec1 = self.vector_mgr.get_query_vector(self._tokenize(text1))
+        vec2 = self.vector_mgr.get_query_vector(self._tokenize(text2))
+        return np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
+
+    def _get_candidate_patterns(self, tokens: List[str]) -> List[frozenset]:
+        return [p for p in self.memory.patterns if any(t in p for t in tokens)]
