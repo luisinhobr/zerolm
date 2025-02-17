@@ -125,28 +125,24 @@ class ChatbotInterface:
         """
 
 def create_chatbot_interface():
-    """Create and launch the Gradio interface"""
+    """Cria a interface Gradio atualizada"""
     chatbot = ChatbotInterface()
     
-    # Create the interface
-    with gr.Blocks(css="footer {display: none !important}") as interface:
-        gr.Markdown("""
-        # ZeroShotLM Chatbot
-        This chatbot learns from interactions and uses context-aware response generation.
-        """)
+    with gr.Blocks() as interface:
+        gr.Markdown("# Chatbot ZeroShotLM")
+        
+        # Componente de chat atualizado
+        chat_messages = gr.Chatbot(
+            label="Histórico",
+            height=600,
+            avatar_images=("assets/user.png", "assets/bot.png"),
+            type="messages"  # Formato OpenAI
+        )
         
         with gr.Row():
             with gr.Column(scale=4):
                 # Main chat interface
-                chatbot_component = gr.Chatbot(
-                    show_label=False,
-                    height=600,
-                    avatar_images=(
-                        "assets/user.png", 
-                        "assets/bot.png"
-                    ),
-                    render=False  # Desativa renderização obsoleta
-                )
+                chatbot_component = chat_messages
                 
                 with gr.Row():
                     message_input = gr.Textbox(
@@ -176,20 +172,20 @@ def create_chatbot_interface():
         
         # Set up event handlers
         submit_btn.click(
-            chatbot.chat,
-            inputs=[message_input, chatbot_component],
-            outputs=[message_input, chatbot_component]
+            lambda msg, hist: chatbot.chat(msg, hist),
+            inputs=[message_input, chat_messages],
+            outputs=[message_input, chat_messages]
         )
         
         message_input.submit(
             chatbot.chat,
-            inputs=[message_input, chatbot_component],
-            outputs=[message_input, chatbot_component]
+            inputs=[message_input, chat_messages],
+            outputs=[message_input, chat_messages]
         )
         
         clear_btn.click(
             chatbot.reset_chat,
-            outputs=[message_input, chatbot_component]
+            outputs=[message_input, chat_messages]
         )
         
         teach_btn.click(
