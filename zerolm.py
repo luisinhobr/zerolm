@@ -183,21 +183,29 @@ class HierarchicalContext:
         return np.average(vectors, axis=0, weights=weights)
 
 class LearningValidator:
-    """Ensures consistency in learned patterns"""
+    """Validador especializado para operações de aprendizagem"""
     def validate(self, query: str, response: str, memory) -> bool:
-        existing = self._find_related_patterns(query, memory)
-        if not existing:
-            return True
+        """Valida se o novo aprendizado é válido"""
+        # Verifica requisitos mínimos
+        if len(query) < 3 or len(response) < 3:
+            return False
             
-        similarity = max(self._semantic_similarity(response, r) 
-                        for r in existing)
-        return similarity >= 0.3
+        # Verifica similaridade com padrões existentes
+        existing_patterns = memory.items()
+        similarity_scores = [
+            self._calculate_similarity(query, pattern)
+            for pattern, _ in existing_patterns
+        ]
+        
+        # Rejeita se for muito similar a padrão existente
+        if max(similarity_scores) > 0.85:
+            return False
+            
+        return True
 
-    def _semantic_similarity(self, a: str, b: str) -> float:
-        # Implement basic semantic similarity measure
-        a_words = set(a.split())
-        b_words = set(b.split())
-        return len(a_words & b_words) / len(a_words | b_words)
+    def _calculate_similarity(self, text1: str, text2: str) -> float:
+        """Calcula similaridade usando Jaro-Winkler"""
+        return jellyfish.jaro_winkler_similarity(text1.lower(), text2.lower())
 
 class TemporalWeightingSystem:
     """Universal temporal relevance integration"""
@@ -476,19 +484,18 @@ class ZeroShotLM:
         # Enhanced components
         self.matcher = PatternMatcher()
         self.context = HierarchicalContext()
-        self.validator = LearningValidator()
+        self.learning_validator = LearningValidator()
+        self.template_validator = TemplateValidator()
         self.workers = workers
         self.metrics = PerformanceMetrics()
 
-        self.validator = TemplateValidator()
-        self.distiller = KnowledgeDistiller(self.vector_mgr, self.memory)
         self.weighter = ContextWeighter()
         self.corrector = AutoCorrector()
         self.enforcer = TemplateEnforcer()
 
     def process_query(self, query: str, xml_template: str) -> Response:
         # Validate template structure
-        validation_results = self.validator.validate_structure(xml_template)
+        validation_results = self.template_validator.validate_structure(xml_template)
         
         # Apply auto-corrections
         corrections = self.corrector.apply_corrections(xml_template)
@@ -539,7 +546,7 @@ class ZeroShotLM:
 
     def learn(self, query: str, response: str) -> bool:
         """Enhanced learning with validation"""
-        if not self.validator.validate(query, response, self.memory):
+        if not self.learning_validator.validate(query, response, self.memory):
             return False
             
         tokens = self._tokenize(query)
@@ -1121,6 +1128,32 @@ class ZeroShotLM:
         final_stats = self.get_memory_stats()
         logger.info(f"Memory optimization complete. Final size: {final_stats.vector_memory_mb:.2f}MB. "
                    f"Removed: {removed_vectors} vectors, {patterns_to_remove if 'patterns_to_remove' in locals() else 0} patterns")
+
+    def _generate_candidates(self, tokens: List[str]) -> List[List[str]]:
+        """Gera variações candidatas para correspondência aproximada"""
+        candidates = []
+        
+        # Gera combinações removendo 1 token por vez
+        if len(tokens) > 1:
+            for i in range(len(tokens)):
+                candidate = tokens[:i] + tokens[i+1:]
+                candidates.append(candidate)
+                
+        # Adiciona versão lematizada
+        lemmatized = [self.lemmatize(token) for token in tokens]
+        if lemmatized != tokens:
+            candidates.append(lemmatized)
+            
+        return candidates
+
+    def lemmatize(self, token: str) -> str:
+        """Lematização básica (implementação de exemplo)"""
+        lemmas = {
+            'correndo': 'correr',
+            'gatos': 'gato',
+            'bonitas': 'bonito'
+        }
+        return lemmas.get(token, token)
 
 class PerformanceMetrics:
     """Comprehensive performance tracking"""
