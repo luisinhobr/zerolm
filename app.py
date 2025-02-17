@@ -107,22 +107,8 @@ class ChatbotInterface:
             return f"Error loading model state: {str(e)}"
 
     def get_memory_stats(self) -> str:
-        """Get formatted memory statistics"""
-        stats = self.model.get_memory_stats()
-        
-        return f"""
-        Memory Statistics:
-        - Patterns: {stats.pattern_count}
-        - Unique Tokens: {stats.token_count}
-        - Vector Memory: {stats.vector_memory_mb:.2f}MB
-        
-        Confidence Distribution:
-        {json.dumps(stats.confidence_histogram, indent=2)}
-        
-        Recent Usage:
-        {json.dumps([(p, time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(t))) 
-                     for p, t in stats.recent_usage], indent=2)}
-        """
+        """Retorna estatísticas formatadas da memória"""
+        return self.model.get_memory_stats()
 
 def create_chatbot_interface():
     """Cria a interface Gradio atualizada"""
