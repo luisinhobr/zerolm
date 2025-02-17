@@ -1004,7 +1004,7 @@ class ZeroShotLM:
         return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9)
 
     def get_memory_stats(self) -> str:
-        """Get formatted memory statistics"""
+        """Gera estatísticas formatadas da memória"""
         stats = {
             'total_patterns': len(self.memory),
             'storage_distribution': {
@@ -1015,8 +1015,32 @@ class ZeroShotLM:
             'confidence_histogram': self._calculate_confidence_distribution(),
             'recent_usage': self._get_recent_usage_stats()
         }
-        
         return self._format_stats(stats)
+
+    def _format_stats(self, stats: dict) -> str:
+        """Formata as estatísticas em texto legível"""
+        return f"""
+        Estatísticas de Memória:
+        - Padrões Totais: {stats['total_patterns']}
+        - Distribuição de Armazenamento:
+          • Hot: {stats['storage_distribution']['hot']}
+          • Warm: {stats['storage_distribution']['warm']}
+          • Cold: {stats['storage_distribution']['cold']}
+        - Distribuição de Confiança:
+          ≥0.9: {stats['confidence_histogram']['0.9+']}
+          0.7-0.9: {stats['confidence_histogram']['0.7-0.9']}
+          0.5-0.7: {stats['confidence_histogram']['0.5-0.7']}
+          <0.5: {stats['confidence_histogram']['<0.5']}
+        - Acessos Recentes (Top 10):
+        {self._format_recent_usage(stats['recent_usage'])}
+        """
+
+    def _format_recent_usage(self, recent: list) -> str:
+        """Formata a lista de acessos recentes"""
+        return "\n".join(
+            f"{item['pattern']} - {item['last_accessed']} (acessos: {item['access_count']})"
+            for item in recent
+        )
 
     def _calculate_confidence_distribution(self) -> dict:
         """Calculate confidence distribution across all patterns"""
@@ -1097,31 +1121,6 @@ class ZeroShotLM:
         final_stats = self.get_memory_stats()
         logger.info(f"Memory optimization complete. Final size: {final_stats.vector_memory_mb:.2f}MB. "
                    f"Removed: {removed_vectors} vectors, {patterns_to_remove if 'patterns_to_remove' in locals() else 0} patterns")
-
-    def _format_stats(self, stats: dict) -> str:
-        """Formata as estatísticas para exibição"""
-        return f"""
-        Estatísticas de Memória:
-        - Padrões Totais: {stats['total_patterns']}
-        - Distribuição de Armazenamento:
-          • Hot: {stats['storage_distribution']['hot']}
-          • Warm: {stats['storage_distribution']['warm']} 
-          • Cold: {stats['storage_distribution']['cold']}
-        - Distribuição de Confiança:
-          ≥0.9: {stats['confidence_histogram']['0.9+']}
-          0.7-0.9: {stats['confidence_histogram']['0.7-0.9']}
-          0.5-0.7: {stats['confidence_histogram']['0.5-0.7']} 
-          <0.5: {stats['confidence_histogram']['<0.5']}
-        - Acessos Recentes (Top 10):
-        {self._format_recent_usage(stats['recent_usage'])}
-        """
-
-    def _format_recent_usage(self, recent: list) -> str:
-        """Formata a lista de acessos recentes"""
-        return "\n".join(
-            f"{item['pattern']} - {item['last_accessed']} (acessos: {item['access_count']})"
-            for item in recent
-        )
 
 class PerformanceMetrics:
     """Comprehensive performance tracking"""
