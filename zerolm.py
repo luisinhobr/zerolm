@@ -127,6 +127,7 @@ class AdaptiveMemoryManager:
         self.cold_storage = defaultdict(list)
         self.access_counts = defaultdict(int)
         self.usage_history = deque(maxlen=1000)
+        self._pattern_count = 0  # Contador explícito
         
     def _calculate_thresholds(self) -> Tuple[float, float]:
         """Dynamic threshold calculation using z-scores"""
@@ -153,6 +154,11 @@ class AdaptiveMemoryManager:
             self.warm_storage[pattern].append((response, ts))
         else:
             self.cold_storage[pattern].append((response, ts))
+        self._pattern_count += 1
+
+    def get_pattern_count(self) -> int:
+        """Retorna o número total de padrões armazenados"""
+        return self._pattern_count
 
 class PatternMatcher:
     """Advanced pattern matching with multiple similarity metrics"""
@@ -1021,7 +1027,7 @@ class ZeroShotLM:
         """Detailed memory statistics"""
         # Calculate memory usage components
         vector_memory = len(self.vector_mgr.vectors) * self.vector_dim * 4  # 4 bytes per float32
-        pattern_count = len(self.memory)
+        pattern_count = self.memory.get_pattern_count()
         
         # Calculate token statistics
         all_tokens = set()
