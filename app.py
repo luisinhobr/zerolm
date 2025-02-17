@@ -140,7 +140,12 @@ def create_chatbot_interface():
                 # Main chat interface
                 chatbot_component = gr.Chatbot(
                     show_label=False,
-                    height=600
+                    height=600,
+                    avatar_images=(
+                        "assets/user.png", 
+                        "assets/bot.png"
+                    ),
+                    render=False  # Desativa renderização obsoleta
                 )
                 
                 with gr.Row():
