@@ -14,7 +14,7 @@ A context-aware, self-learning chatbot that adapts through conversation without 
 ## Installation
 
 ```bash
-git clone https://github.com/yourusername/zerolm.git
+git clone https://github.com/luisinhobr/zerolm
 cd zerolm
 pip install -r requirements.txt
 ```
