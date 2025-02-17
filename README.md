@@ -3,11 +3,6 @@
 
 A context-aware, self-learning chatbot that adapts through conversation without traditional training.
 
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-
-![Chatbot Interface Demo](docs/demo.png) <!-- Add actual demo screenshot -->
-
 ## Features
 
 - 🧠 Training-free learning through conversation
