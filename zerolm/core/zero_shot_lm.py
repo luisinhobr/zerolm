@@ -8,7 +8,7 @@ import json
 import pickle
 
 from zerolm.types.response_type import ResponseType
-from .response import Response
+from zerolm.core.response import Response
 from zerolm.memory import AdaptiveMemoryManager, VectorManager, ConcurrentLRUCache
 from zerolm.matching import PatternMatcher
 from zerolm.context import HierarchicalContext, ContextWeighter
