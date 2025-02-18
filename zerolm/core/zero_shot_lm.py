@@ -721,8 +721,3 @@ class ZeroShotLM:
             self.logger.error(f"Error bootstrapping core patterns: {str(e)}")
             # Continue initialization even if bootstrapping fails
             pass
-
-
-
-
-
