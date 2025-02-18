@@ -187,22 +187,31 @@ class AdaptiveMemoryManager:
             if confidence >= 0.9:
                 if len(self.hot_storage) >= self.hot_capacity:
                     # Move oldest hot pattern to warm
-                    oldest = min(self.hot_storage.items(), key=lambda x: x[1]['timestamp'])
-                    self.warm_storage[oldest[0]] = oldest[1]
-                    del self.hot_storage[oldest[0]]
+                    oldest_key = min(
+                        self.hot_storage.keys(),
+                        key=lambda k: (self.hot_storage[k]['timestamp'], hash(k))
+                    )
+                    self.warm_storage[oldest_key] = self.hot_storage[oldest_key]
+                    del self.hot_storage[oldest_key]
                 self.hot_storage[pattern] = entry
             elif confidence >= 0.7:
                 if len(self.warm_storage) >= self.warm_capacity:
                     # Move oldest warm pattern to cold
-                    oldest = min(self.warm_storage.items(), key=lambda x: x[1]['timestamp'])
-                    self.cold_storage[oldest[0]] = oldest[1]
-                    del self.warm_storage[oldest[0]]
+                    oldest_key = min(
+                        self.warm_storage.keys(),
+                        key=lambda k: (self.warm_storage[k]['timestamp'], hash(k))
+                    )
+                    self.cold_storage[oldest_key] = self.warm_storage[oldest_key]
+                    del self.warm_storage[oldest_key]
                 self.warm_storage[pattern] = entry
             else:
                 if len(self.cold_storage) >= self.cold_capacity:
                     # Remove oldest cold pattern
-                    oldest = min(self.cold_storage.items(), key=lambda x: x[1]['timestamp'])
-                    del self.cold_storage[oldest[0]]
+                    oldest_key = min(
+                        self.cold_storage.keys(),
+                        key=lambda k: (self.cold_storage[k]['timestamp'], hash(k))
+                    )
+                    del self.cold_storage[oldest_key]
                 self.cold_storage[pattern] = entry
                 
             return True
@@ -279,6 +288,65 @@ class AdaptiveMemoryManager:
                 },
                 "recent_patterns": []
             }
+
+    def remove_pattern(self, pattern: frozenset) -> None:
+        """Thread-safe pattern removal from all storage tiers"""
+        with ThreadPoolExecutor() as executor:
+            for storage in [self.hot_storage, self.warm_storage, self.cold_storage]:
+                executor.submit(storage.pop, pattern, None)
+
+    def prune_memory(self, max_items: Optional[int] = None, min_confidence: float = 0.2):
+        """Safe memory pruning with hash-based sorting"""
+        max_items = max_items or self.config.get("max_patterns", 10000)
+        
+        # Get all patterns with their hash values
+        all_patterns = [(p, hash(p)) for p, _ in self.items()]
+        
+        # Score patterns with hash-based fallback
+        pattern_scores = {
+            p: (self._calculate_pattern_score(p), h) 
+            for p, h in all_patterns
+        }
+        
+        # Sort using scores first, then hashes to prevent set comparisons
+        sorted_patterns = sorted(
+            all_patterns,
+            key=lambda x: (pattern_scores[x[0]][0], x[1]),
+            reverse=True
+        )
+        
+        # Select patterns to keep
+        keep_patterns = {p for p, _ in sorted_patterns[:max_items]}
+        keep_patterns.update(
+            p for p, _ in all_patterns 
+            if pattern_scores[p][0] >= min_confidence
+        )
+        
+        # Remove patterns using atomic operations
+        for p, _ in all_patterns:
+            if p not in keep_patterns:
+                self.remove_pattern(p)
+        
+        self._rebuild_indexes()
+
+    def _calculate_pattern_score(self, pattern: frozenset) -> float:
+        """Type-safe pattern scoring"""
+        try:
+            data = next((s[pattern] for s in [
+                self.hot_storage,
+                self.warm_storage, 
+                self.cold_storage
+            ] if pattern in s), None)
+            
+            if not data:
+                return 0.0
+            
+            hours_since_access = (time.time() - data['timestamp']) / 3600
+            return (0.7 * math.exp(-0.1 * hours_since_access)) + (0.3 * data['access_count'])
+            
+        except Exception as e:
+            self.logger.error(f"Scoring error: {str(e)}")
+            return 0.0
 
 class PatternMatcher:
     """Advanced pattern matching with multiple similarity metrics"""
@@ -782,13 +850,8 @@ class ZeroShotLM:
             # Calculate learning confidence
             confidence = self._calculate_learning_confidence(query, response)
             
-            # Add pattern to memory
-            success = self.memory.add_pattern(pattern, {
-                'response': response,
-                'confidence': confidence,
-                'timestamp': time.time(),
-                'access_count': 0
-            })
+            # Add pattern to memory with confidence
+            success = self.memory.add_pattern(pattern, response, confidence)
             
             # Update vectors if enabled
             if success and self.use_vectors:
@@ -965,42 +1028,6 @@ class ZeroShotLM:
         
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(export_data, f, ensure_ascii=False)
-
-    def prune_memory(self, max_items: Optional[int] = None, min_confidence: float = 0.2):
-        """Clean up memory with default values from config"""
-        max_items = max_items or self.config.get("max_patterns", 10000)
-        # Score patterns by recency and usage
-        pattern_scores = {
-            pattern: self._calculate_pattern_score(pattern)
-            for pattern in self.memory.items()
-        }
-        
-        # Keep top patterns and those above confidence threshold
-        keep_patterns = set(nlargest(max_items, pattern_scores, key=pattern_scores.get))
-        keep_patterns.update(
-            p for p, score in pattern_scores.items() 
-            if score >= min_confidence
-        )
-        
-        # Prune memory and indexes
-        self.memory = {
-            p: v for p, v in self.memory.items()
-            if p in keep_patterns
-        }
-        self._rebuild_indexes()
-
-    def _calculate_pattern_score(self, pattern: frozenset) -> float:
-        """Calculate pattern retention score"""
-        recency = max(ts for _, ts in self.memory[pattern]) / time.time()
-        frequency = len(self.memory[pattern])
-        return (0.7 * recency) + (0.3 * frequency)
-
-    def _rebuild_indexes(self):
-        """Reconstruct pattern indexes after pruning"""
-        self.pattern_index.clear()
-        for pattern in self.memory.keys():
-            for token in pattern:
-                self.pattern_index[token].add(pattern)
 
     def _vectorize(self, tokens: List[str]) -> np.ndarray:
         """Create sentence vector using token embeddings"""
