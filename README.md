@@ -2,6 +2,12 @@
 # ZeroLM - Training-Free Language Model
 
 A context-aware, self-learning chatbot that adapts through conversation without traditional training.
+This is my first project! Please be kind.
+
+## Known Issues
+```bash
+Error generating response: '<=' not supported between instances of 'frozenset' and 'int'
+```
 
 ## Features
 
