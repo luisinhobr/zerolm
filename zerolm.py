@@ -30,16 +30,17 @@ class ResponseType(Enum):
     EXACT = "exact"
     APPROXIMATE = "approximate"
     LEARNING = "learning"
+    ERROR = "error"
+    UNKNOWN = "unknown"
+    NORMAL = "normal"
 
 @dataclass
 class Response:
     text: str
-    type: ResponseType
     confidence: float
-    context: Optional[List[str]] = None
+    type: ResponseType
     metadata: Optional[Dict[str, Any]] = None
-    vector_contribution: Optional[float] = None
-    token_contribution: Optional[float] = None
+    context: Optional[List[str]] = None
     
     def explain(self) -> str:
         """Generate human-readable explanation of the response"""
@@ -95,37 +96,69 @@ class ConcurrentLRUCache:
 
 class VectorManager:
     """Optimized vector storage with sparse representation"""
-    def __init__(self, vector_dim: int, use_sparse: bool = True):
+    def __init__(self, vector_dim: int = 100, use_sparse: bool = False):
         self.vector_dim = vector_dim
         self.use_sparse = use_sparse
         self.vectors = {}
+        self.responses = {}
         
-    def add_vector(self, key: str, vector: np.ndarray) -> None:
-        if self.use_sparse:
-            nonzero_idx = vector.nonzero()[0]
-            nonzero_values = vector[nonzero_idx].astype(np.float32)
-            self.vectors[key] = (nonzero_idx, nonzero_values)
-        else:
-            self.vectors[key] = vector.astype(np.float32)
-            
-    def get_vector(self, key: str) -> np.ndarray:
-        if key not in self.vectors:
+    def vectorize(self, tokens: List[str]) -> np.ndarray:
+        """Convert tokens to vector representation"""
+        if not tokens:
             return np.zeros(self.vector_dim)
             
-        if self.use_sparse:
-            vector = np.zeros(self.vector_dim, dtype=np.float32)
-            idx, values = self.vectors[key]
-            vector[idx] = values
-            return vector
-        return self.vectors[key]
+        # Simple averaging of word vectors
+        vector = np.zeros(self.vector_dim)
+        for token in tokens:
+            # Generate a random but consistent vector for each token
+            token_hash = hash(token) % self.vector_dim
+            token_vector = np.zeros(self.vector_dim)
+            token_vector[token_hash] = 1.0
+            vector += token_vector
+            
+        return vector / max(len(tokens), 1)
+        
+    def add_vector(self, vector: np.ndarray, response: str) -> None:
+        """Store vector and response"""
+        vector_key = tuple(vector)  # Convert to hashable type
+        self.vectors[vector_key] = vector
+        self.responses[vector_key] = response
+        
+    def find_similar(
+        self,
+        query_vector: np.ndarray,
+        threshold: float = 0.5,
+        max_results: int = 5
+    ) -> List[Tuple[str, float]]:
+        """Find similar vectors with proper parameters"""
+        results = []
+        for vec_key, response in self.responses.items():
+            similarity = np.dot(query_vector, np.array(vec_key))
+            if similarity >= threshold:
+                results.append((response, similarity))
+        return sorted(results, key=lambda x: x[1], reverse=True)[:max_results]
 
 class AdaptiveMemoryManager:
-    """Enhanced with proper iteration support"""
-    def __init__(self):
-        self.hot_storage = {}    # Frequently accessed patterns
-        self.warm_storage = {}   # Moderately used patterns
-        self.cold_storage = {}   # Rarely used patterns
+    def __init__(
+        self,
+        max_patterns: int = 10000,
+        hot_ratio: float = 0.1,
+        warm_ratio: float = 0.3
+    ):
+        self.max_patterns = max_patterns
+        self.hot_capacity = int(max_patterns * hot_ratio)
+        self.warm_capacity = int(max_patterns * warm_ratio)
+        self.cold_capacity = max_patterns - (self.hot_capacity + self.warm_capacity)
         
+        self.hot_storage = {}
+        self.warm_storage = {}
+        self.cold_storage = {}
+
+    def __iter__(self):
+        """Make memory manager iterable"""
+        for storage in [self.hot_storage, self.warm_storage, self.cold_storage]:
+            yield from storage.items()
+
     def __len__(self) -> int:
         """Total patterns across all storage tiers"""
         return (
@@ -133,15 +166,130 @@ class AdaptiveMemoryManager:
             len(self.warm_storage) + 
             len(self.cold_storage)
         )
-        
+
     def items(self):
         """Combine items from all storage tiers"""
         return list(self.hot_storage.items()) + \
                list(self.warm_storage.items()) + \
                list(self.cold_storage.items())
 
+    def add_pattern(self, pattern: frozenset, response: str, confidence: float) -> bool:
+        """Add pattern to appropriate storage tier based on confidence"""
+        try:
+            entry = {
+                'response': response,
+                'confidence': confidence,
+                'timestamp': time.time(),
+                'access_count': 0
+            }
+            
+            # Determine storage tier based on confidence
+            if confidence >= 0.9:
+                if len(self.hot_storage) >= self.hot_capacity:
+                    # Move oldest hot pattern to warm
+                    oldest = min(self.hot_storage.items(), key=lambda x: x[1]['timestamp'])
+                    self.warm_storage[oldest[0]] = oldest[1]
+                    del self.hot_storage[oldest[0]]
+                self.hot_storage[pattern] = entry
+            elif confidence >= 0.7:
+                if len(self.warm_storage) >= self.warm_capacity:
+                    # Move oldest warm pattern to cold
+                    oldest = min(self.warm_storage.items(), key=lambda x: x[1]['timestamp'])
+                    self.cold_storage[oldest[0]] = oldest[1]
+                    del self.warm_storage[oldest[0]]
+                self.warm_storage[pattern] = entry
+            else:
+                if len(self.cold_storage) >= self.cold_capacity:
+                    # Remove oldest cold pattern
+                    oldest = min(self.cold_storage.items(), key=lambda x: x[1]['timestamp'])
+                    del self.cold_storage[oldest[0]]
+                self.cold_storage[pattern] = entry
+                
+            return True
+            
+        except Exception as e:
+            logging.error(f"Error adding pattern: {str(e)}")
+            return False
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Get comprehensive memory statistics"""
+        try:
+            # Calculate total patterns
+            total_patterns = len(self.hot_storage) + len(self.warm_storage) + len(self.cold_storage)
+            
+            # Calculate storage distribution
+            storage_dist = {
+                "hot": len(self.hot_storage),
+                "warm": len(self.warm_storage),
+                "cold": len(self.cold_storage)
+            }
+            
+            # Calculate confidence distribution
+            confidence_dist = {
+                "high": 0,   # >= 0.9
+                "medium": 0, # 0.7-0.9
+                "low": 0,    # 0.5-0.7
+                "very_low": 0 # < 0.5
+            }
+            
+            # Count patterns by confidence
+            for storage in [self.hot_storage, self.warm_storage, self.cold_storage]:
+                for pattern_data in storage.values():
+                    conf = pattern_data.get('confidence', 0.0)
+                    if conf >= 0.9:
+                        confidence_dist["high"] += 1
+                    elif conf >= 0.7:
+                        confidence_dist["medium"] += 1
+                    elif conf >= 0.5:
+                        confidence_dist["low"] += 1
+                    else:
+                        confidence_dist["very_low"] += 1
+            
+            # Get recent patterns (from hot storage)
+            recent_patterns = sorted(
+                [
+                    (pattern, data.get('timestamp', 0), data.get('confidence', 0))
+                    for pattern, data in self.hot_storage.items()
+                ],
+                key=lambda x: x[1],
+                reverse=True
+            )[:10]  # Get top 10 most recent
+            
+            return {
+                "total_patterns": total_patterns,
+                "storage_distribution": storage_dist,
+                "confidence_distribution": confidence_dist,
+                "recent_patterns": [
+                    {
+                        "pattern": " ".join(pattern),
+                        "confidence": conf,
+                        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
+                    }
+                    for pattern, ts, conf in recent_patterns
+                ]
+            }
+            
+        except Exception as e:
+            logging.error(f"Error getting memory stats: {str(e)}")
+            return {
+                "total_patterns": 0,
+                "storage_distribution": {"hot": 0, "warm": 0, "cold": 0},
+                "confidence_distribution": {
+                    "high": 0, "medium": 0, "low": 0, "very_low": 0
+                },
+                "recent_patterns": []
+            }
+
 class PatternMatcher:
     """Advanced pattern matching with multiple similarity metrics"""
+    def __init__(
+        self,
+        min_confidence: float = 0.3,
+        use_fuzzy: bool = True
+    ):
+        self.min_confidence = min_confidence
+        self.use_fuzzy = use_fuzzy
+
     @staticmethod
     def enhanced_similarity(vec1: np.ndarray, vec2: np.ndarray) -> float:
         cosine_sim = np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
@@ -424,44 +572,49 @@ class TemplateEnforcer:
 class ZeroShotLM:
     def __init__(
         self,
-        use_vectors: bool = False,
         vector_dim: int = 100,
+        use_sparse_vectors: bool = False,
         min_confidence: float = 0.3,
         temporal_weight: float = 0.7,
         context_window: int = 5,
-        language: str = "pt-BR",
-        max_patterns: int = 10_000,
+        language: str = "en",
+        max_patterns: int = 10000,
         learning_rate: float = 0.1,
-        vector_decay: float = 0.99,
-        batch_size: int = 100,
-        cleanup_interval: int = 3600,
-        max_memory_mb: float = 500,
-        use_sparse_vectors: bool = True,
-        workers: int = 4
+        use_vectors: bool = True
     ):
-        # Core memory structures
-        self.memory = AdaptiveMemoryManager()
+        # Initialize logger
+        self.logger = logging.getLogger(__name__)
+        
+        # Store configuration parameters
+        self.vector_dim = vector_dim
+        self.use_vectors = use_vectors  # Set this before bootstrapping
+        self.use_sparse_vectors = use_sparse_vectors
+        self.min_confidence = min_confidence
+        self.temporal_weight = temporal_weight
+        self.language = language.lower()
+        self.learning_rate = learning_rate
+        
+        # Initialize components
+        self.memory = AdaptiveMemoryManager(max_patterns=max_patterns)
+        self.vector_mgr = VectorManager(
+            vector_dim=vector_dim,
+            use_sparse=use_sparse_vectors
+        )
+        self.pattern_matcher = PatternMatcher(min_confidence=min_confidence)
+        
+        # Initialize context window
+        self.context_window = deque(maxlen=context_window)
+        
+        # Initialize synonym dictionary
         self.synonyms = defaultdict(set)
-        self.context_window: List[Tuple[List[str], float]] = []
         
-        # Configuration
-        self.config = {
-            "min_confidence": min_confidence,
-            "temporal_weight": temporal_weight,
-            "context_window": context_window,
-            "language": language
-        }
-        
-        # Initial learning responses
-        self.learning_responses = self._initialize_learning_responses()
-        
-        # Initialize basic patterns
+        # Bootstrap core patterns
         self._bootstrap_core_patterns()
         
+        # Initialize learning responses
+        self.learning_responses = self._initialize_learning_responses()
+        
         # Vector-based components
-        self.use_vectors = use_vectors
-        self.vector_dim = vector_dim
-        self.vector_mgr = VectorManager(vector_dim, use_sparse_vectors)
         self.vector_index = defaultdict(set)  # {token: set(frozenset patterns)}
         
         # Performance optimizations
@@ -470,97 +623,183 @@ class ZeroShotLM:
         self.vector_cache = ConcurrentLRUCache(maxsize=1000)
         
         # Learning controls
-        self.learning_rate = learning_rate
-        self.vector_decay = vector_decay
+        self.vector_decay = 0.99
         self.batch_buffer = []
-        self.batch_size = batch_size
+        self.batch_size = 100
         
         # Memory management
-        self.cleanup_interval = cleanup_interval
+        self.cleanup_interval = 3600
         self.last_cleanup = time.time()
         self.pattern_usage = defaultdict(int)
         self.token_usage = defaultdict(int)
         
         # Enhanced components
-        self.matcher = PatternMatcher()
         self.context = HierarchicalContext()
         self.learning_validator = LearningValidator()
         self.template_validator = TemplateValidator()
-        self.workers = workers
+        self.workers = 4
         self.metrics = PerformanceMetrics()
 
         self.weighter = ContextWeighter()
         self.corrector = AutoCorrector()
         self.enforcer = TemplateEnforcer()
 
-    def process_query(self, query: str, xml_template: str) -> Response:
-        # Validate template structure
-        validation_results = self.template_validator.validate_structure(xml_template)
-        
-        # Apply auto-corrections
-        corrections = self.corrector.apply_corrections(xml_template)
-        
-        # Calculate context weights
-        context_score = self.weighter.calculate_context_score(query)
-        
-        # Distill knowledge from multiple sources
-        response = self.distiller.distill_response(query, context_score)
-        
-        # Enforce compliance
-        compliance_errors = self.enforcer.validate_compliance(xml_template)
-        
-        return self._format_response(response, compliance_errors)
+        # Add config dictionary
+        self.config = {
+            'min_confidence': min_confidence,
+            'temporal_weight': temporal_weight,
+            'learning_rate': learning_rate,
+            'vector_dim': vector_dim,
+            'use_vectors': use_vectors,
+            'use_sparse_vectors': use_sparse_vectors,
+            'language': language,
+            'max_patterns': max_patterns
+        }
+
+    def _initialize_learning_responses(self) -> Dict[str, List[str]]:
+        """Initialize responses for learning interactions"""
+        if self.language == "pt":
+            return {
+                "unknown": [
+                    "Não sei como responder isso ainda. Pode me ensinar?",
+                    "Ainda não aprendi sobre isso. Pode me explicar?",
+                    "Não conheço essa! Como você responderia?",
+                ],
+                "learning_success": [
+                    "Obrigado! Aprendi algo novo!",
+                    "Entendi! Vou lembrar disso!",
+                    "Legal! Agora sei como responder isso!",
+                ],
+                "learning_error": [
+                    "Desculpe, tive um problema ao aprender isso.",
+                    "Ops! Algo deu errado ao tentar aprender.",
+                    "Não consegui aprender isso corretamente.",
+                ],
+                "low_confidence": [
+                    "Não tenho certeza, mas acho que seria assim...",
+                    "Talvez seja assim, mas não estou muito confiante.",
+                    "Posso tentar responder, mas não tenho certeza.",
+                ]
+            }
+        else:  # Default to English
+            return {
+                "unknown": [
+                    "I don't know how to answer this yet. Can you teach me?",
+                    "I haven't learned about this. Could you explain?",
+                    "Interesting! How would you answer this?",
+                ],
+                "learning_success": [
+                    "Thank you! I learned something new!",
+                    "Got it! I'll remember that!",
+                    "Great! Now I know how to respond to this!",
+                ],
+                "learning_error": [
+                    "Sorry, I had trouble learning that.",
+                    "Oops! Something went wrong while learning.",
+                    "I couldn't learn that properly.",
+                ],
+                "low_confidence": [
+                    "I'm not sure, but I think it might be...",
+                    "Maybe this, but I'm not very confident.",
+                    "I can try to answer, but I'm uncertain.",
+                ]
+            }
+
+    def get_context(self) -> List[str]:
+        """Recupera tokens contextuais da janela de contexto"""
+        return [token for tokens, _ in self.context_window for token in tokens]
 
     def process_query(self, query: str) -> Response:
         """Process input query and generate response"""
         try:
-            if time.time() - self.last_cleanup > self.cleanup_interval:
-                self.prune_memory()
-                self.last_cleanup = time.time()
+            tokens = self.tokenize(query)
+            if not tokens:
+                return Response("Please provide a valid input.", 0.0, ResponseType.ERROR)
                 
-            return self._process_query_core(query)
+            # Update context window
+            self.context_window.append((tokens, time.time()))
+            
+            # Try to generate response
+            result = self._generate_response(tokens)
+            if not result:
+                return Response(
+                    "I don't know how to answer that yet. Can you teach me?",
+                    0.0,
+                    ResponseType.UNKNOWN
+                )
+                
+            response_text, confidence = result
+            return Response(response_text, confidence, ResponseType.NORMAL)
+            
         except Exception as e:
-            logger.error(f"Query processing error: {str(e)}")
-            return self._create_learning_response("Processing error")
-
-    def _process_query_core(self, query: str) -> Response:
-        """Core query processing logic"""
-        tokens = self._tokenize(query)
-        if not tokens:
-            return self._create_learning_response("Empty query")
-            
-        self.context.update(tokens)
-        response_data = self._generate_response(tokens)
-        
-        if response_data:
-            text, confidence = response_data
+            self.logger.error(f"Query processing error: {str(e)}")
             return Response(
-                text=text,
-                type=self._determine_response_type(confidence),
-                confidence=confidence,
-                context=self._get_current_context(),
-                metadata=self._create_metadata(tokens, confidence)
+                "I encountered an error processing your message.",
+                0.0,
+                ResponseType.ERROR
             )
+
+    def _generate_response(self, tokens: List[str]) -> Optional[Tuple[str, float]]:
+        """Generate response for input tokens"""
+        try:
+            # Convert tokens to set for pattern matching
+            token_set = frozenset(tokens)
             
-        return self._create_learning_response()
+            # Check patterns in memory
+            best_match = None
+            best_confidence = 0.0
+            
+            for pattern, data in self.memory.hot_storage.items():
+                # Calculate pattern match confidence
+                confidence = self._calculate_match_confidence(pattern, token_set)
+                
+                # Update best match if confidence is higher and meets minimum threshold
+                if confidence > best_confidence and confidence >= self.min_confidence:
+                    best_match = data
+                    best_confidence = confidence
+            
+            if best_match:
+                return best_match['response'], best_confidence
+                
+            # Try semantic matching if no exact match and vectors are enabled
+            if self.use_vectors:
+                vector_matches = self._semantic_fallback(tokens)
+                if vector_matches:
+                    return vector_matches
+                    
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"Error generating response: {str(e)}")
+            return None
 
     def learn(self, query: str, response: str) -> bool:
-        """Enhanced learning with validation"""
-        if not self.learning_validator.validate(query, response, self.memory):
+        """Learn new pattern-response pair"""
+        try:
+            tokens = self.tokenize(query)
+            pattern = frozenset(tokens)
+            
+            # Calculate learning confidence
+            confidence = self._calculate_learning_confidence(query, response)
+            
+            # Add pattern to memory
+            success = self.memory.add_pattern(pattern, {
+                'response': response,
+                'confidence': confidence,
+                'timestamp': time.time(),
+                'access_count': 0
+            })
+            
+            # Update vectors if enabled
+            if success and self.use_vectors:
+                vector = self.vector_mgr.vectorize(tokens)
+                self.vector_mgr.add_vector(vector, response)
+                
+            return success
+            
+        except Exception as e:
+            self.logger.error(f"Learning failed: {str(e)}")
             return False
-            
-        tokens = self._tokenize(query)
-        pattern = frozenset(tokens)
-        
-        # Update vectors in batch
-        vecs = [self.vector_mgr.get_vector(t) for t in tokens]
-        query_vec = np.mean(vecs, axis=0)
-        for t, v in zip(tokens, vecs):
-            new_vec = 0.9*v + 0.1*query_vec
-            self.vector_mgr.add_vector(t, new_vec)
-            
-        self.memory.add_pattern(pattern, response, time.time())
-        return True
 
     def _update_usage_stats(self, pattern: frozenset, tokens: List[str]):
         """Track pattern and token usage"""
@@ -568,15 +807,16 @@ class ZeroShotLM:
         for token in tokens:
             self.token_usage[token] += 1
 
-    def _update_vectors(self, tokens: List[str]):
-        """Update vector representations"""
-        query_vector = self._vectorize(tokens)
-        for token in tokens:
-            self.vector_mgr.add_vector(token, (
-                self.vector_decay * self.vector_mgr.get_vector(token) + 
-                (1 - self.vector_decay) * query_vector
-            ))
-            self._validate_vector(self.vector_mgr.get_vector(token))
+    def _update_vectors(self, tokens: List[str], response: str) -> None:
+        """Update vector representations for tokens"""
+        if not self.use_vectors or not tokens:
+            return
+            
+        try:
+            vector = self.vector_mgr.vectorize(tokens)
+            self.vector_mgr.add_vector(vector, response)
+        except Exception as e:
+            self.logger.error(f"Vector update failed: {str(e)}")
 
     def _store_pattern(self, pattern: frozenset, response: str):
         """Store pattern with timestamp"""
@@ -587,9 +827,12 @@ class ZeroShotLM:
 
     def _tokenize(self, text: str) -> List[str]:
         """Tokenize input text"""
-        text = text.lower().strip()
-        text = re.sub(r'[^\w\sáéíóúâêîôûãõç]', '', text)
-        return [word for word in text.split() if word]
+        if not text:
+            return []
+            
+        # Basic tokenization
+        tokens = text.lower().split()
+        return [token.strip() for token in tokens if token.strip()]
 
     def _update_context(self, tokens: List[str]):
         """Update conversation context window"""
@@ -604,213 +847,37 @@ class ZeroShotLM:
             if timestamp >= window_start
         ]
 
-    def _generate_response(self, tokens: List[str]) -> Optional[Tuple[str, float]]:
-        """Enhanced response generation pipeline"""
-        # Try exact match first
-        if response := self._exact_match(tokens):
-            return response
-            
-        # Vector-based match
-        if response := self._vector_match(tokens):
-            return response
-            
-        # Contextual partial match
-        if response := self._context_match(tokens):
-            return response
-            
-        # Semantic fallback
-        return self._semantic_fallback(tokens)
-
-    def _exact_match(self, tokens: List[str]) -> Optional[Tuple[str, float]]:
-        """Try to generate response with confidence score"""
-        # Check exact matches
-        if matches := self.memory.hot_storage.get(frozenset(tokens)):
-            response, timestamp = self._select_best_match(matches)
-            confidence = self._calculate_confidence(tokens, response, timestamp)
-            return response, confidence
-        
-        # Try expanded token matching
-        expanded_tokens = self._expand_tokens(tokens)
-        for candidate_tokens in self._generate_candidates(expanded_tokens):
-            if matches := self.memory.hot_storage.get(frozenset(candidate_tokens)):
-                response, timestamp = self._select_best_match(matches)
-                confidence = self._calculate_confidence(candidate_tokens, response, timestamp) * 0.8
-                if confidence >= self.config["min_confidence"]:
-                    return response, confidence
-        
-        return None
-
-    def _vector_match(self, tokens: List[str]) -> Optional[Tuple[str, float]]:
-        """Optimized vector matching with caching"""
-        cache_key = frozenset(tokens)
-        if cached := self.vector_cache.get(cache_key):
-            return cached
-            
-        query_vector = self._vectorize(tokens)
-        matches = self._find_vector_matches(query_vector)
-        
-        if matches:
-            best_match = matches[0]
-            self.vector_cache.put(cache_key, best_match)
-            return best_match
-            
-        return None
-
-    def _context_match(self, tokens: List[str]) -> Optional[Tuple[str, float]]:
-        """Context-aware partial matching"""
-        context_tokens = self._get_context()
-        token_scores = self._calculate_token_importance(tokens, context_tokens)
-        
-        candidates = []
-        for pattern in self._get_candidate_patterns(tokens):
-            score = sum(token_scores.get(t, 0) for t in pattern)
-            if score > 0.5:
-                responses = self.memory.hot_storage.get(pattern)
-                if responses:
-                    best_response = max(responses, key=lambda x: x[1])
-                    confidence = score * self._temporal_decay(best_response[1])
-                    candidates.append((best_response[0], confidence))
-        
-        return max(candidates, key=lambda x: x[1]) if candidates else None
-
-    def _calculate_token_importance(self, tokens: List[str], context: List[str]) -> Dict[str, float]:
-        """TF-IDF inspired scoring"""
-        scores = {}
-        freq = Counter(context)
-        total_patterns = sum(len(s) for s in [self.memory.hot_storage, 
-                                             self.memory.warm_storage,
-                                             self.memory.cold_storage])
-        
-        for token in tokens:
-            pattern_count = len(self.pattern_index.get(token, []))
-            idf = math.log(total_patterns / (pattern_count + 1)) if total_patterns > 0 else 0
-            context_boost = 1 + (freq[token] * 0.1)
-            scores[token] = idf * context_boost
-            
-        max_score = max(scores.values(), default=1)
-        return {t: s/max_score for t, s in scores.items()}
-
-    def _expand_tokens(self, tokens: List[str]) -> List[str]:
-        """Expand tokens with synonyms and context"""
-        expanded = set(tokens)
-        
-        # Add synonyms
-        for token in tokens:
-            expanded.update(self.synonyms[token])
-        
-        # Add relevant context tokens
-        context_tokens = [t for tokens, _ in self.context_window for t in tokens]
-        expanded.update(self._filter_relevant_tokens(context_tokens, tokens))
-        
-        return list(expanded)
-
-    def _filter_relevant_tokens(self, context_tokens: List[str], query_tokens: List[str]) -> List[str]:
-        """Filter context tokens based on relevance to query"""
-        return [
-            token for token in context_tokens
-            if any(self._token_similarity(token, qt) > 0.7 for qt in query_tokens)
-        ]
-
-    def _token_similarity(self, token1: str, token2: str) -> float:
-        """Enhanced similarity with multiple strategies"""
-        if token1 == token2:
-            return 1.0
-            
-        # Check synonyms
-        if token1 in self.synonyms.get(token2, set()):
-            return 0.9
-            
-        # Levenshtein similarity
-        lev_dist = jellyfish.levenshtein_distance(token1, token2)
-        max_len = max(len(token1), len(token2))
-        if max_len > 0:
-            lev_sim = 1 - (lev_dist / max_len)
-            if lev_sim > 0.8:
-                return lev_sim * 0.8
+    def _calculate_match_confidence(self, pattern: frozenset, tokens: frozenset) -> float:
+        """Calculate match confidence between pattern and input tokens"""
+        try:
+            if not pattern or not tokens:
+                return 0.0
                 
-        # Phonetic similarity
-        if jellyfish.metaphone(token1) == jellyfish.metaphone(token2):
-            return 0.7
+            # Calculate intersection and union
+            intersection = len(pattern.intersection(tokens))
+            union = len(pattern.union(tokens))
             
-        return 0.0
-
-    def _calculate_confidence(self, tokens: List[str], response: str, timestamp: float) -> float:
-        """Calculate confidence score for a response"""
-        # Base confidence from token match
-        confidence = 1.0
-        
-        # Apply temporal decay
-        time_diff = time.time() - timestamp
-        temporal_factor = max(0.5, 1.0 - (time_diff / (3600 * 24 * 7)))  # 7 day decay
-        confidence *= temporal_factor
-        
-        # Consider context overlap
-        context_overlap = len(set(tokens) & set(t for ctx, _ in self.context_window for t in ctx))
-        context_factor = 1.0 + (context_overlap * 0.1)
-        confidence *= context_factor
-        
-        return min(1.0, confidence)
-
-    def _determine_response_type(self, confidence: float) -> ResponseType:
-        """Determine response type based on confidence"""
-        if confidence >= 0.8:
-            return ResponseType.EXACT
-        elif confidence >= self.config["min_confidence"]:
-            return ResponseType.APPROXIMATE
-        return ResponseType.LEARNING
-
-    def _create_learning_response(self, reason: str = None) -> Response:
-        """Create response for learning mode"""
-        text = random.choice(self.learning_responses)
-        if reason:
-            text = f"{text} ({reason})"
+            if union == 0:
+                return 0.0
+                
+            # Basic Jaccard similarity
+            confidence = intersection / union
             
-        return Response(
-            text=text,
-            type=ResponseType.LEARNING,
-            confidence=0.0,
-            context=self._get_current_context(),
-            metadata={"reason": reason} if reason else None
-        )
-
-    def _initialize_learning_responses(self) -> List[str]:
-        """Initialize learning mode responses"""
-        if self.config["language"] == "pt-BR":
-            return [
-                "Não sei responder isso ainda. Pode me ensinar?",
-                "Interessante! Como você responderia isso?",
-                "Ainda estou aprendendo sobre isso. Qual seria uma boa resposta?",
-                "Não tenho certeza. Poderia me explicar?",
-                "Gostaria de aprender como responder isso corretamente."
-            ]
-        return [
-            "I don't know how to answer that yet. Can you teach me?",
-            "Interesting! How would you answer this?",
-            "I'm still learning about this. What would be a good response?",
-            "I'm not sure. Could you explain?",
-            "I'd like to learn how to answer this correctly."
-        ]
-
-    def _bootstrap_core_patterns(self):
-        """Initialize basic language patterns"""
-        if self.config["language"] == "pt-BR":
-            patterns = {
-                "saudacao": {"olá", "oi", "bom dia", "boa tarde", "boa noite"},
-                "despedida": {"tchau", "adeus", "até logo", "até mais"},
-                "concordancia": {"sim", "claro", "certamente", "exato"},
-                "discordancia": {"não", "nunca", "jamais", "incorreto"}
-            }
-        else:
-            patterns = {
-                "greeting": {"hello", "hi", "good morning", "good afternoon", "good evening"},
-                "farewell": {"goodbye", "bye", "see you", "farewell"},
-                "agreement": {"yes", "sure", "certainly", "exactly"},
-                "disagreement": {"no", "never", "incorrect", "wrong"}
-            }
+            # Apply temporal weighting if context window is not empty
+            if self.context_window:
+                time_factor = 1.0
+                current_time = time.time()
+                for past_tokens, timestamp in self.context_window:
+                    if pattern.intersection(past_tokens):
+                        time_delta = current_time - timestamp
+                        time_factor *= (1.0 - (time_delta * self.temporal_weight))
+                confidence *= time_factor
+                
+            return confidence
             
-        for pattern_type, words in patterns.items():
-            for word in words:
-                self.synonyms[word].update(words - {word})
+        except Exception as e:
+            self.logger.error(f"Error calculating match confidence: {str(e)}")
+            return 0.0
 
     def _analyze_patterns(self, tokens: List[str], response: str):
         """Analyze patterns to improve understanding"""
@@ -899,7 +966,7 @@ class ZeroShotLM:
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(export_data, f, ensure_ascii=False)
 
-    def prune_memory(self, max_items: int = None, min_confidence: float = 0.2):
+    def prune_memory(self, max_items: Optional[int] = None, min_confidence: float = 0.2):
         """Clean up memory with default values from config"""
         max_items = max_items or self.config.get("max_patterns", 10000)
         # Score patterns by recency and usage
@@ -987,7 +1054,9 @@ class ZeroShotLM:
             self.vector_decay = vector_decay
             
         if max_patterns is not None:
-            self.recent_patterns = deque(self.recent_patterns, maxlen=max_patterns)
+            if max_patterns <= 0:
+                raise ValueError("max_patterns must be greater than 0")
+            self.recent_patterns = deque(list(self.recent_patterns)[:max_patterns], maxlen=max_patterns)
 
     def export_patterns(self, min_confidence: float = 0.5) -> Dict:
         """Export learned patterns meeting confidence threshold"""
@@ -1011,68 +1080,39 @@ class ZeroShotLM:
         return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9)
 
     def get_memory_stats(self) -> str:
-        """Gera estatísticas formatadas da memória"""
-        stats = {
-            'total_patterns': len(self.memory),
-            'storage_distribution': {
-                'hot': len(self.memory.hot_storage),
-                'warm': len(self.memory.warm_storage),
-                'cold': len(self.memory.cold_storage)
-            },
-            'confidence_histogram': self._calculate_confidence_distribution(),
-            'recent_usage': self._get_recent_usage_stats()
-        }
-        return self._format_stats(stats)
-
-    def _format_stats(self, stats: dict) -> str:
-        """Formata as estatísticas em texto legível"""
+        """Get formatted memory statistics"""
+        stats = self.memory.get_stats()
+    
         return f"""
-        Estatísticas de Memória:
-        - Padrões Totais: {stats['total_patterns']}
-        - Distribuição de Armazenamento:
+        Memory Statistics:
+        - Total Patterns: {stats['total_patterns']}
+        - Storage Distribution:
           • Hot: {stats['storage_distribution']['hot']}
           • Warm: {stats['storage_distribution']['warm']}
           • Cold: {stats['storage_distribution']['cold']}
-        - Distribuição de Confiança:
-          ≥0.9: {stats['confidence_histogram']['0.9+']}
-          0.7-0.9: {stats['confidence_histogram']['0.7-0.9']}
-          0.5-0.7: {stats['confidence_histogram']['0.5-0.7']}
-          <0.5: {stats['confidence_histogram']['<0.5']}
-        - Acessos Recentes (Top 10):
-        {self._format_recent_usage(stats['recent_usage'])}
-        """
-
-    def _format_recent_usage(self, recent: list) -> str:
-        """Formata a lista de acessos recentes"""
-        return "\n".join(
-            f"{item['pattern']} - {item['last_accessed']} (acessos: {item['access_count']})"
-            for item in recent
-        )
-
-    def _calculate_confidence_distribution(self) -> dict:
-        """Calculate confidence distribution across all patterns"""
-        confidences = []
-        for _, patterns in self.memory.items():
-            confidences.extend([p[1] for p in patterns])
-            
-        return {
-            '0.9+': len([c for c in confidences if c >= 0.9]),
-            '0.7-0.9': len([c for c in confidences if 0.7 <= c < 0.9]),
-            '0.5-0.7': len([c for c in confidences if 0.5 <= c < 0.7]),
-            '<0.5': len([c for c in confidences if c < 0.5])
-        }
-
-    def _get_recent_usage_stats(self) -> list:
-        """Get recent usage statistics from hot storage"""
-        recent = []
-        for pattern, data in self.memory.hot_storage.items():
-            recent.append({
-                'pattern': pattern,
-                'last_accessed': time.strftime('%Y-%m-%d %H:%M:%S', 
-                                time.localtime(data['last_accessed'])),
-                'access_count': data['access_count']
-            })
-        return sorted(recent, key=lambda x: x['last_accessed'], reverse=True)[:10]
+        - Confidence Distribution:
+          ≥0.9: {stats['confidence_distribution']['high']}
+          0.7-0.9: {stats['confidence_distribution']['medium']}
+          <0.7: {stats['confidence_distribution']['low']}
+        - Recent Patterns:
+          {self._format_recent_patterns()}
+    """
+    
+    def _format_recent_patterns(self) -> str:
+        """Format recent patterns for display"""
+        recent = sorted(
+            self.memory.hot_storage.items(),
+            key=lambda x: x[1]['timestamp'],
+            reverse=True
+        )[:5]
+    
+        if not recent:
+         return "No patterns learned yet"
+        
+        return "\n          ".join(
+            f"• {' '.join(pattern)} → {data['response'][:30]}..."
+            for pattern, data in recent
+            )
 
     def optimize_memory(self, target_size_mb: float):
         """Memory optimization implementation"""
@@ -1155,6 +1195,127 @@ class ZeroShotLM:
         }
         return lemmas.get(token, token)
 
+    def _semantic_fallback(self, tokens: List[str]) -> Optional[Tuple[str, float]]:
+        """Estratégia de fallback semântico usando vetores"""
+        try:
+            query_vector = self.vector_mgr.vectorize(tokens)
+            similar = self.vector_mgr.find_similar(query_vector)
+            
+            if similar:
+                best_match = max(similar, key=lambda x: x[1])
+                return best_match[0], best_match[1] * 0.8
+            return None
+        except Exception as e:
+            self.logger.error(f"Semantic fallback error: {str(e)}")
+            return None
+
+    def _calculate_learning_confidence(self, query: str, response: str) -> float:
+        """Calculate confidence for learning new patterns"""
+        if not query or not response:
+            return 0.0
+            
+        # Basic confidence calculation
+        query_length = len(self.tokenize(query))
+        response_length = len(self.tokenize(response))
+        
+        if query_length < 2 or response_length < 2:
+            return 0.0
+            
+        # Higher confidence for balanced query/response lengths
+        length_ratio = min(query_length, response_length) / max(query_length, response_length)
+        
+        # Base confidence
+        confidence = 0.5 + (length_ratio * 0.5)
+        
+        return min(confidence, 1.0)
+
+    def tokenize(self, text: str) -> List[str]:
+        """Tokenize input text"""
+        if not text:
+            return []
+            
+        # Basic tokenization
+        tokens = text.lower().split()
+        return [token.strip() for token in tokens if token.strip()]
+
+    def _normalize_score(self, score: float, max_score: float) -> float:
+        """Safely normalize score"""
+        if max_score <= 0:
+            return 0.0
+        return min(score / max_score, 1.0)
+
+    def _calculate_match_confidence(self, pattern_length: int, matched_tokens: int) -> float:
+        """Safely calculate match confidence"""
+        if pattern_length <= 0:
+            return 0.0
+        return min(matched_tokens / pattern_length, 1.0)
+
+    def _bootstrap_core_patterns(self) -> None:
+        """Initialize core patterns and responses based on language"""
+        try:
+            # Define basic patterns by language
+            patterns = {
+                "en": {
+                    "hello": {
+                        "synonyms": {"hi", "hey", "howdy", "greetings"},
+                        "response": "Hello! How can I help you today?"
+                    },
+                    "goodbye": {
+                        "synonyms": {"bye", "cya", "farewell", "see you"},
+                        "response": "Goodbye! Have a great day!"
+                    },
+                    "thanks": {
+                        "synonyms": {"thank you", "thx", "appreciate it"},
+                        "response": "You're welcome!"
+                    }
+                },
+                "pt": {
+                    "oi": {
+                        "synonyms": {"olá", "ola", "eae", "e ai"},
+                        "response": "Olá! Como posso ajudar?"
+                    },
+                    "tchau": {
+                        "synonyms": {"adeus", "até logo", "ate logo", "falou"},
+                        "response": "Tchau! Tenha um ótimo dia!"
+                    },
+                    "obrigado": {
+                        "synonyms": {"obrigada", "valeu", "agradeço"},
+                        "response": "De nada!"
+                    }
+                }
+            }
+            
+            # Get patterns for the current language
+            lang_patterns = patterns.get(self.language, patterns["en"])
+            
+            # Add patterns and their synonyms
+            for word, data in lang_patterns.items():
+                # Add synonyms
+                self.synonyms[word].update(data["synonyms"])
+                for synonym in data["synonyms"]:
+                    self.synonyms[synonym].add(word)
+                    self.synonyms[synonym].update(data["synonyms"] - {synonym})
+                
+                # Learn the pattern with high confidence
+                pattern = frozenset({word})
+                self.memory.add_pattern(
+                    pattern=pattern,
+                    response=data["response"],
+                    confidence=0.9
+                )
+                
+                # Add vector representation if enabled
+                if self.use_vectors:
+                    vector = self.vector_mgr.vectorize([word])
+                    self.vector_mgr.add_vector(vector, data["response"])
+            
+            self.logger.info(f"Core patterns bootstrapped for language: {self.language}")
+            
+        except Exception as e:
+            self.logger.error(f"Error bootstrapping core patterns: {str(e)}")
+            # Continue initialization even if bootstrapping fails
+            pass
+
 class PerformanceMetrics:
     """Comprehensive performance tracking"""
     def __init__(self):
@@ -1185,18 +1346,25 @@ class TemplateValidator:
             ('attribute_constraints/param[@name]', 0.8)
         ]
         
-    def validate_structure(self, xml_tree) -> Dict:
-        """Implements the structural validation rules"""
-        results = {}
-        for xpath, min_confidence in self.required_nodes:
-            node = xml_tree.find(xpath)
-            exists = node is not None
-            results[xpath] = {
-                'exists': exists,
-                'confidence': min_confidence if exists else 0.0,
-                'error': None if exists else f"Missing required node: {xpath}"
+    def validate_structure(self, xml_tree) -> dict:
+        """Validação robusta com tratamento de erros"""
+        try:
+            errors = []
+            for xpath, _ in self.required_nodes:
+                if not xml_tree.find(xpath):
+                    errors.append(f"Elemento obrigatório ausente: {xpath}")
+            
+            return {
+                'valid': len(errors) == 0,
+                'errors': errors,
+                'confidence': 1.0 - (len(errors) * 0.1)
             }
-        return results
+        except Exception as e:
+            return {
+                'valid': False,
+                'errors': [f"Erro de validação: {str(e)}"],
+                'confidence': 0.0
+            }
 
     def enforce_attribute_rules(self, xml_tree) -> List[str]:
         """Enforces attribute format rules from the template"""
@@ -1355,4 +1523,13 @@ class KnowledgeDistiller:
         return np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
 
     def _get_candidate_patterns(self, tokens: List[str]) -> List[frozenset]:
-        return [p for p in self.memory.patterns if any(t in p for t in tokens)]
+        """Obtém padrões candidatos de todas as camadas de memória"""
+        candidates = []
+        for storage in [self.memory.hot_storage,
+                        self.memory.warm_storage,
+                        self.memory.cold_storage]:
+            candidates.extend(
+                p for p in storage.keys()
+                if any(t in p for t in tokens)
+            )
+        return sorted(candidates, key=lambda x: len(x), reverse=True)[:100]
