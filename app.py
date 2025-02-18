@@ -5,7 +5,8 @@ from pathlib import Path
 from collections import deque
 import logging
 
-from zerolm.core import ZeroShotLM, Response
+from zerolm.core import ZeroShotLM
+from zerolm.response import Response
 from zerolm.types import ResponseType
 from zerolm.memory import MemoryStats
 
