@@ -1,14 +1,12 @@
 import gradio as gr
-import numpy as np
 from typing import List, Tuple, Dict
 import time
-import json
 from pathlib import Path
 from collections import deque
 import logging
 
 # Import our ZeroShotLM implementation
-from zerolm import ZeroShotLM, Response, ResponseType
+from zerolm import ZeroShotLM, Response, ResponseType, MemoryStats
 
 class ChatbotInterface:
     def __init__(self):
@@ -38,41 +36,32 @@ class ChatbotInterface:
         logging.basicConfig(level=logging.INFO)
 
     def _format_response(self, response: Response) -> dict:
-        """Formata a resposta no formato correto para o Gradio"""
+        """Format the response for Gradio interface"""
         return {
             "role": "assistant",
-            "content": f"{response.text} [Confiança: {response.confidence:.2f}]"
+            "content": f"{response.text} [Confidence: {response.confidence:.2f}]"
         }
 
     def chat(self, message: str, history: List[dict]) -> Tuple[str, List[dict]]:
-        """
-        Process a chat message and update history
-        
-        Args:
-            message: User input text
-            history: List of message dictionaries
-            
-        Returns:
-            Tuple of (empty string, updated history)
-        """
+        """Process a chat message and update history"""
         # Convert input list to deque temporarily
         temp_history = deque(history, maxlen=self.max_history * 2)
         
         if not message.strip():
             return "", list(temp_history)
             
-        # Obtém resposta do modelo
+        # Get response from model
         response = self.model.process_query(message)
         
-        # Formata no novo padrão
+        # Format response
         formatted_response = self._format_response(response)
         
-        # Atualiza histórico com dicionários
+        # Update history with dictionaries
         temp_history.append({"role": "user", "content": message})
         temp_history.append(formatted_response)
         
-        # Mantém apenas o histórico máximo
-        if len(temp_history) > self.max_history * 2:  # Multiplica por 2 (user + assistant)
+        # Keep only max history
+        if len(temp_history) > self.max_history * 2:  # Multiply by 2 (user + assistant)
             temp_history = temp_history[-self.max_history * 2:]
             
         # Return as list for Gradio compatibility
@@ -90,7 +79,7 @@ class ChatbotInterface:
             return "Successfully learned new response!"
         return "Failed to learn response. Please try again."
 
-    def reset_chat(self) -> Tuple[str, List[Tuple[str, str]]]:
+    def reset_chat(self) -> Tuple[str, List[dict]]:
         """Reset the chat history"""
         self.history.clear()
         return "", []
@@ -121,20 +110,19 @@ class ChatbotInterface:
         except Exception as e:
             return f"Error loading model state: {str(e)}"
 
-    def get_memory_stats(self) -> str:
-        """Return formatted memory statistics"""
+    def get_memory_stats(self) -> MemoryStats:
+        """Return memory statistics"""
         return self.model.get_memory_stats()
 
 def create_chatbot_interface():
-    """Cria interface com configuração correta de mensagens"""
+    """Create interface with correct message configuration"""
     chatbot = ChatbotInterface()
     
     with gr.Blocks() as interface:
-        # Configuração da interface corrigida
-        gr.Markdown("# Chatbot ZeroShotLM")
+        gr.Markdown("# ZeroShotLM Chatbot")
         
         chat_messages = gr.Chatbot(
-            label="Conversa",
+            label="Conversation",
             type="messages",
             avatar_images=("user.png", "bot.png")
         )
@@ -161,11 +149,11 @@ def create_chatbot_interface():
                 teach_btn = gr.Button("Teach")
                 learn_output = gr.Textbox(label="Learning Status", interactive=False)
                 
-                # Stats display with proper configuration
+                # Stats display
                 stats_output = gr.Textbox(
                     label="Memory Statistics",
                     interactive=False,
-                    value=chatbot.get_memory_stats(),
+                    value=str(chatbot.get_memory_stats()),
                     every=30  # Automatic updates every 30 seconds
                 )
                 refresh_stats_btn = gr.Button("Refresh Stats")
@@ -195,7 +183,7 @@ def create_chatbot_interface():
         )
         
         refresh_stats_btn.click(
-            lambda: chatbot.get_memory_stats(),
+            lambda: str(chatbot.get_memory_stats()),
             outputs=[stats_output]
         )
     
@@ -204,3 +192,4 @@ def create_chatbot_interface():
 if __name__ == "__main__":
     interface = create_chatbot_interface()
     interface.launch(share=True)
+
