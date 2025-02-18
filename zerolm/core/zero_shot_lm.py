@@ -292,7 +292,7 @@ class ZeroShotLM:
     def _calculate_match_confidence(self, pattern: frozenset, tokens: frozenset) -> float:
         """Calculate match confidence between pattern and input tokens"""
         try:
-            if not pattern or not tokens:
+            if len(pattern) == 0 or len(tokens) == 0:
                 return 0.0
                 
             # Calculate intersection and union
