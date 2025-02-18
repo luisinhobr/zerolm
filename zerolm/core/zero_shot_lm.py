@@ -105,6 +105,10 @@ class ZeroShotLM:
             'max_patterns': max_patterns
         }
 
+    def _bootstrap_core_patterns(self) -> None:
+        """Initialize core patterns for the bot"""
+        if self.language == "pt":
+            self.memory.add_pattern(frozenset(["oi"]), "Olá! Como posso ajudar?", 1.0)
     def _initialize_learning_responses(self) -> Dict[str, List[str]]:
         """Initialize responses for learning interactions"""
         if self.language == "pt":

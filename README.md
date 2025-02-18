@@ -6,7 +6,7 @@ This is my first project! Please be kind.
 
 ## Known Issues
 ```bash
-Error generating response: '<=' not supported between instances of 'frozenset' and 'int'
+SyntaxError: source code string cannot contain null bytes
 ```
 
 ## Features
