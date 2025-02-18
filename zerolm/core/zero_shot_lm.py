@@ -9,7 +9,9 @@ import pickle
 
 from zerolm.types.response_type import ResponseType
 from zerolm.core.response import Response
-from zerolm.memory import AdaptiveMemoryManager, VectorManager, ConcurrentLRUCache
+from zerolm.memory.adaptive_manager import AdaptiveMemoryManager
+from zerolm.memory.vector_manager import VectorManager 
+from zerolm.memory.concurrent_cache import ConcurrentLRUCache
 from zerolm.matching import PatternMatcher
 from zerolm.context import HierarchicalContext, ContextWeighter
 from zerolm.learning import LearningValidator
