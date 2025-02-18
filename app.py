@@ -1,9 +1,11 @@
 import gradio as gr
 import numpy as np
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 import time
 import json
 from pathlib import Path
+from collections import deque
+import logging
 
 # Import our ZeroShotLM implementation
 from zerolm import ZeroShotLM, Response, ResponseType
@@ -12,7 +14,7 @@ class ChatbotInterface:
     def __init__(self):
         # Initialize the ZeroShotLM model with common settings
         self.model = ZeroShotLM(
-            use_vectors=True,
+            use_sparse_vectors=True,
             vector_dim=100,
             min_confidence=0.3,
             temporal_weight=0.7,
@@ -22,9 +24,8 @@ class ChatbotInterface:
             learning_rate=0.1
         )
         
-        # Chat history storage
-        self.history: List[Tuple[str, str]] = []
         self.max_history = 50
+        self.history = deque(maxlen=self.max_history * 2)
         
         # Path for saving/loading model state
         self.save_path = Path("chatbot_state")
@@ -33,6 +34,9 @@ class ChatbotInterface:
         # Try to load existing model state
         self._load_state()
 
+        self.logger = logging.getLogger(__name__)
+        logging.basicConfig(level=logging.INFO)
+
     def _format_response(self, response: Response) -> dict:
         """Formata a resposta no formato correto para o Gradio"""
         return {
@@ -40,10 +44,22 @@ class ChatbotInterface:
             "content": f"{response.text} [Confiança: {response.confidence:.2f}]"
         }
 
-    def chat(self, message: str, history: list) -> tuple:
-        """Processa a mensagem e atualiza o histórico corretamente"""
+    def chat(self, message: str, history: List[dict]) -> Tuple[str, List[dict]]:
+        """
+        Process a chat message and update history
+        
+        Args:
+            message: User input text
+            history: List of message dictionaries
+            
+        Returns:
+            Tuple of (empty string, updated history)
+        """
+        # Convert input list to deque temporarily
+        temp_history = deque(history, maxlen=self.max_history * 2)
+        
         if not message.strip():
-            return "", history
+            return "", list(temp_history)
             
         # Obtém resposta do modelo
         response = self.model.process_query(message)
@@ -52,14 +68,15 @@ class ChatbotInterface:
         formatted_response = self._format_response(response)
         
         # Atualiza histórico com dicionários
-        history.append({"role": "user", "content": message})
-        history.append(formatted_response)
+        temp_history.append({"role": "user", "content": message})
+        temp_history.append(formatted_response)
         
         # Mantém apenas o histórico máximo
-        if len(history) > self.max_history * 2:  # Multiplica por 2 (user + assistant)
-            history = history[-self.max_history * 2:]
+        if len(temp_history) > self.max_history * 2:  # Multiplica por 2 (user + assistant)
+            temp_history = temp_history[-self.max_history * 2:]
             
-        return "", history
+        # Return as list for Gradio compatibility
+        return "", list(temp_history)
 
     def learn_response(self, message: str, correct_response: str) -> str:
         """Teach the model a new response"""
@@ -75,17 +92,23 @@ class ChatbotInterface:
 
     def reset_chat(self) -> Tuple[str, List[Tuple[str, str]]]:
         """Reset the chat history"""
-        self.history = []
+        self.history.clear()
         return "", []
 
     def _save_state(self) -> str:
-        """Save model state to disk"""
+        """Save model state with detailed error handling"""
         try:
             save_file = self.save_path / "model_state.pkl"
             self.model.save(str(save_file))
-            return f"Model state saved successfully at {time.strftime('%Y-%m-%d %H:%M:%S')}"
+            msg = f"Saved successfully at {time.strftime('%Y-%m-%d %H:%M:%S')}"
+            self.logger.info(msg)
+            return msg
+        except PermissionError as pe:
+            self.logger.error(f"Permission error: {str(pe)}")
+            return "Error: File permission denied"
         except Exception as e:
-            return f"Error saving model state: {str(e)}"
+            self.logger.error(f"Save failed: {str(e)}")
+            return f"Error saving state: {str(e)}"
 
     def _load_state(self) -> str:
         """Load model state from disk"""
@@ -99,7 +122,7 @@ class ChatbotInterface:
             return f"Error loading model state: {str(e)}"
 
     def get_memory_stats(self) -> str:
-        """Retorna estatísticas formatadas da memória"""
+        """Return formatted memory statistics"""
         return self.model.get_memory_stats()
 
 def create_chatbot_interface():
@@ -107,18 +130,13 @@ def create_chatbot_interface():
     chatbot = ChatbotInterface()
     
     with gr.Blocks() as interface:
+        # Configuração da interface corrigida
         gr.Markdown("# Chatbot ZeroShotLM")
         
-        # Componente de chat configurado corretamente
         chat_messages = gr.Chatbot(
             label="Conversa",
-            height=600,
-            avatar_images=("assets/user.png", "assets/bot.png"),
             type="messages",
-            examples=[
-                {"role": "user", "content": "O que é inteligência artificial?"},
-                {"role": "user", "content": "Explique machine learning"}
-            ]
+            avatar_images=("user.png", "bot.png")
         )
         
         with gr.Row():
@@ -143,12 +161,12 @@ def create_chatbot_interface():
                 teach_btn = gr.Button("Teach")
                 learn_output = gr.Textbox(label="Learning Status", interactive=False)
                 
-                # Stats display
-                gr.Markdown("### Memory Statistics")
+                # Stats display with proper configuration
                 stats_output = gr.Textbox(
-                    label="Stats",
+                    label="Memory Statistics",
                     interactive=False,
-                    value=chatbot.get_memory_stats()
+                    value=chatbot.get_memory_stats(),
+                    every=30  # Automatic updates every 30 seconds
                 )
                 refresh_stats_btn = gr.Button("Refresh Stats")
         
@@ -180,9 +198,6 @@ def create_chatbot_interface():
             lambda: chatbot.get_memory_stats(),
             outputs=[stats_output]
         )
-        
-        # Update stats periodically
-        gr.Textbox.update(value=chatbot.get_memory_stats(), every=30)
     
     return interface
 
