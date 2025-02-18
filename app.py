@@ -5,8 +5,10 @@ from pathlib import Path
 from collections import deque
 import logging
 
-# Import our ZeroShotLM implementation
-from zerolm import ZeroShotLM, Response, ResponseType, MemoryStats
+from zerolm.core import ZeroShotLM, Response
+from zerolm.types import ResponseType
+from zerolm.memory import MemoryStats
+
 
 class ChatbotInterface:
     def __init__(self):
