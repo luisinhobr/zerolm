@@ -86,12 +86,11 @@ class ChatbotInterface:
         """Reset the chat history"""
         self.history.clear()
         return "", []
-
     def _save_state(self) -> str:
         """Save model state with detailed error handling"""
         try:
             save_file = self.save_path / "model_state.pkl"
-        # Create backup before saving
+            # Create backup before saving
             if save_file.exists():
                 backup_file = self.save_path / "model_state.backup.pkl"
                 save_file.rename(backup_file)
@@ -118,7 +117,6 @@ class ChatbotInterface:
 
     def _load_state(self) -> str:
         """Load model state from disk"""
-
         try:
             save_file = self.save_path / "model_state.pkl"
             if save_file.exists():
@@ -128,9 +126,9 @@ class ChatbotInterface:
                     if b'\x00' in content:
                         self.logger.error("File contains null bytes - corrupted data")
                         return "Error: Model state file is corrupted (contains null bytes)"
-                        self.model.load(str(save_file))
-                        return "Model state loaded successfully"
-                return "No saved state found"
+                    self.model.load(str(save_file))
+                    return "Model state loaded successfully"
+            return "No saved state found"
         except Exception as e:
             self.logger.error(f"Load failed: {str(e)}")
             return f"Error loading model state: {str(e)}"
@@ -139,8 +137,9 @@ class ChatbotInterface:
         """Return memory statistics"""
         return self.model.get_memory_stats()
 
-    def create_chatbot_interface():
-        """Create interface with correct message configuration"""
+
+def create_chatbot_interface():
+    """Create interface with correct message configuration"""
     chatbot = ChatbotInterface()
     
     with gr.Blocks() as interface:
@@ -213,7 +212,6 @@ class ChatbotInterface:
         )
     
         return interface
-
 if __name__ == "__main__":
     interface = create_chatbot_interface()
     interface.launch(share=True)
