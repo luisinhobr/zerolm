@@ -89,51 +89,51 @@ class ChatbotInterface:
 
     def _save_state(self) -> str:
         """Save model state with detailed error handling"""
-    try:
-        save_file = self.save_path / "model_state.pkl"
+        try:
+            save_file = self.save_path / "model_state.pkl"
         # Create backup before saving
-        if save_file.exists():
-            backup_file = self.save_path / "model_state.backup.pkl"
-            save_file.rename(backup_file)
+            if save_file.exists():
+                backup_file = self.save_path / "model_state.backup.pkl"
+                save_file.rename(backup_file)
             
-        self.model.save(str(save_file))
+            self.model.save(str(save_file))
         
-        # Verify saved file
-        with open(str(save_file), 'rb') as f:
-            content = f.read()
+            # Verify saved file
+            with open(str(save_file), 'rb') as f:
+                content = f.read()
             if b'\x00' in content:
                 if backup_file.exists():
                     backup_file.rename(save_file)
                 raise ValueError("Generated file contains null bytes")
                 
-        msg = f"Saved successfully at {time.strftime('%Y-%m-%d %H:%M:%S')}"
-        self.logger.info(msg)
-        return msg
-    except PermissionError as pe:
-        self.logger.error(f"Permission error: {str(pe)}")
-        return "Error: File permission denied"
-    except Exception as e:
-        self.logger.error(f"Save failed: {str(e)}")
-        return f"Error saving state: {str(e)}"
+            msg = f"Saved successfully at {time.strftime('%Y-%m-%d %H:%M:%S')}"
+            self.logger.info(msg)
+            return msg
+        except PermissionError as pe:
+            self.logger.error(f"Permission error: {str(pe)}")
+            return "Error: File permission denied"
+        except Exception as e:
+            self.logger.error(f"Save failed: {str(e)}")
+            return f"Error saving state: {str(e)}"
 
     def _load_state(self) -> str:
         """Load model state from disk"""
 
-    try:
-        save_file = self.save_path / "model_state.pkl"
-        if save_file.exists():
-            # Read file in binary mode and check for null bytes
-            with open(str(save_file), 'rb') as f:
-                content = f.read()
-                if b'\x00' in content:
-                    self.logger.error("File contains null bytes - corrupted data")
-                    return "Error: Model state file is corrupted (contains null bytes)"
-                self.model.load(str(save_file))
-                return "Model state loaded successfully"
-        return "No saved state found"
-    except Exception as e:
-        self.logger.error(f"Load failed: {str(e)}")
-        return f"Error loading model state: {str(e)}"
+        try:
+            save_file = self.save_path / "model_state.pkl"
+            if save_file.exists():
+                # Read file in binary mode and check for null bytes
+                with open(str(save_file), 'rb') as f:
+                    content = f.read()
+                    if b'\x00' in content:
+                        self.logger.error("File contains null bytes - corrupted data")
+                        return "Error: Model state file is corrupted (contains null bytes)"
+                        self.model.load(str(save_file))
+                        return "Model state loaded successfully"
+                return "No saved state found"
+        except Exception as e:
+            self.logger.error(f"Load failed: {str(e)}")
+            return f"Error loading model state: {str(e)}"
 
     def get_memory_stats(self) -> MemoryStats:
         """Return memory statistics"""
