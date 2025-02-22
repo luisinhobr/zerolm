@@ -372,15 +372,34 @@ class ZeroShotLM:
 
     def save(self, file_path: str, export_format: str = 'binary') -> None:
         """Enhanced save with format options and validation"""
+    try:
         if not os.path.exists(os.path.dirname(file_path)):
             raise ValueError(f"Invalid path: {file_path}")
         
+        # Sanitize state before saving
+        state = {
+            'memory': dict(self.memory),
+            'synonyms': dict(self.synonyms),
+            'config': self.config,
+            'vectors': {
+                k: v.tolist() if isinstance(v, np.ndarray) else v 
+                for k, v in self.vector_mgr.vectors.items()
+            } if self.use_vectors else None,
+            'pattern_index': dict(self.pattern_index)
+        }
+        
         if export_format == 'binary':
-            self._save_binary(file_path)
+            with open(file_path, 'wb') as f:
+                pickle.dump(state, f, protocol=pickle.HIGHEST_PROTOCOL)
         elif export_format == 'json':
-            self._save_json(file_path)
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(state, f, ensure_ascii=False, indent=2)
         else:
             raise ValueError(f"Unsupported format: {export_format}")
+            
+    except Exception as e:
+        self.logger.error(f"Save failed: {str(e)}")
+        raise
 
     def _save_binary(self, file_path: str):
         state = {
@@ -413,6 +432,30 @@ class ZeroShotLM:
         
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(export_data, f, ensure_ascii=False)
+    
+    def load(self, file_path: str) -> None:
+            """Load model state with validation"""
+            try:
+                with open(file_path, 'rb') as f:
+                    state = pickle.load(f)
+            
+                # Convert lists back to numpy arrays for vectors
+                if state.get('vectors'):
+                    state['vectors'] = {
+                        k: np.array(v) if isinstance(v, list) else v
+                        for k, v in state['vectors'].items()
+                    }
+            
+                self.memory = state['memory']
+                self.synonyms = defaultdict(set, state['synonyms'])
+                self.config = state['config']
+                if self.use_vectors and state['vectors']:
+                    self.vector_mgr.vectors = state['vectors']
+                self.pattern_index = defaultdict(set, state['pattern_index'])
+        
+            except Exception as e:
+                self.logger.error(f"Load failed: {str(e)}")
+                raise
 
     def _vectorize(self, tokens: List[str]) -> np.ndarray:
         """Create sentence vector using token embeddings"""
@@ -582,16 +625,14 @@ class ZeroShotLM:
                    f"Removed: {removed_vectors} vectors, {patterns_to_remove if 'patterns_to_remove' in locals() else 0} patterns")
 
     def _generate_candidates(self, tokens: List[str]) -> List[List[str]]:
-        """Gera variações candidatas para correspondência aproximada"""
+        """Generate candidate patterns for semantic fallback"""
         candidates = []
         
-        # Gera combinações removendo 1 token por vez
         if len(tokens) > 1:
             for i in range(len(tokens)):
                 candidate = tokens[:i] + tokens[i+1:]
                 candidates.append(candidate)
                 
-        # Adiciona versão lematizada
         lemmatized = [self.lemmatize(token) for token in tokens]
         if lemmatized != tokens:
             candidates.append(lemmatized)
@@ -599,7 +640,7 @@ class ZeroShotLM:
         return candidates
 
     def lemmatize(self, token: str) -> str:
-        """Lematização básica (implementação de exemplo)"""
+        """Simple lemmatization for demonstration purposes"""
         lemmas = {
             'correndo': 'correr',
             'gatos': 'gato',
@@ -608,7 +649,7 @@ class ZeroShotLM:
         return lemmas.get(token, token)
 
     def _semantic_fallback(self, tokens: List[str]) -> Optional[Tuple[str, float]]:
-        """Estratégia de fallback semântico usando vetores"""
+        """Fallback mechanism for semantic matching"""
         try:
             query_vector = self.vector_mgr.vectorize(tokens)
             similar = self.vector_mgr.find_similar(query_vector)
