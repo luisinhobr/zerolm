@@ -212,7 +212,7 @@ class ChatbotInterface:
             outputs=[stats_output]
         )
     
-    return interface
+        return interface
 
 if __name__ == "__main__":
     interface = create_chatbot_interface()
